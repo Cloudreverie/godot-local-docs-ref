@@ -1,0 +1,1030 @@
+from __future__ import annotations
+
+import argparse
+import contextlib
+import importlib.util
+import io
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "search_godot_docs.py"
+SPEC = importlib.util.spec_from_file_location("search_godot_docs", SCRIPT)
+assert SPEC is not None and SPEC.loader is not None
+search_godot_docs = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = search_godot_docs
+SPEC.loader.exec_module(search_godot_docs)
+
+
+NODE_PAGE = """---
+title: "Node"
+godot_version: "4.7"
+source_path: "classes/class_node.rst"
+license: "MIT"
+---
+# Node
+
+**Inherits:** Object
+
+Base class for scene objects.
+
+## Signals
+
+**ready**()
+
+Emitted when the node is ready.
+
+---
+
+## Enumerations
+
+enum **DuplicateFlags**:
+
+DuplicateFlags **DUPLICATE_SIGNALS** = `1`
+
+Duplicate the node's signal connections.
+
+DuplicateFlags **DUPLICATE_GROUPS** = `2`
+
+Duplicate the node's groups.
+
+---
+
+## Constants
+
+**NOTIFICATION_READY** = `13`
+
+Notification received when the node is ready.
+
+**NOTIFICATION_PROCESS** = `17`
+
+Notification received every rendered frame. See NOTIFICATION_READY for startup order.
+
+---
+
+## Method Descriptions
+
+void **queue_free**()
+
+Queues this node to be deleted at the end of the current frame.
+
+---
+
+void **remove_child**(node: Node)
+
+Removes a child node.
+"""
+
+
+OBJECT_PAGE = """---
+title: "Object"
+godot_version: "4.7"
+source_path: "classes/class_object.rst"
+license: "MIT"
+---
+# Object
+
+Base class for all Godot objects.
+
+## Method Descriptions
+
+void **free**()
+
+Deletes the object immediately.
+"""
+
+
+CANVAS_ITEM_PAGE = """---
+title: "CanvasItem"
+godot_version: "4.7"
+source_path: "classes/class_canvasitem.rst"
+license: "MIT"
+---
+# CanvasItem
+
+**Inherits:** Node **<** Object
+
+## Property Descriptions
+
+bool **visible** = `true`
+
+- void **set_visible**(value: bool)
+- bool **is_visible**()
+
+Controls whether this CanvasItem is drawn.
+"""
+
+
+NODE_2D_PAGE = """---
+title: "Node2D"
+godot_version: "4.7"
+source_path: "classes/class_node2d.rst"
+license: "MIT"
+---
+# Node2D
+
+**Inherits:** CanvasItem **<** Node **<** Object
+
+## Property Descriptions
+
+Vector2 **global_position**
+
+- void **set_global_position**(value: Vector2)
+- Vector2 **get_global_position**()
+
+Global position.
+
+---
+
+Vector2 **position** = `Vector2(0, 0)`
+
+- void **set_position**(value: Vector2)
+- Vector2 **get_position**()
+
+Position relative to the parent.
+"""
+
+
+TUTORIAL_PAGE = """---
+title: "Creating your first script"
+godot_version: "4.7"
+source_path: "getting_started/step_by_step/scripting_first_script.rst"
+license: "CC-BY-3.0"
+---
+# Creating your first script
+
+## Hello, world!
+
+Print a message to the Output
+panel.
+
+```gdscript
+## This is code, not a document heading
+print("Hello, world!")
+```
+
+The editor may report: "Indented block expected".
+
+## Moving forward
+
+Move the sprite each frame.
+"""
+
+
+INPUT_ACTIONS_PAGE = """---
+title: "Player scene and input actions"
+godot_version: "4.7"
+source_path: "getting_started/first_3d_game/02.player_input.rst"
+license: "CC-BY-3.0"
+---
+# Player scene and input actions
+
+Register custom input actions and use them to move the player.
+"""
+
+
+CHARACTER_BODY_PAGE = """---
+title: "CharacterBody2D"
+godot_version: "4.7"
+source_path: "classes/class_characterbody2d.rst"
+license: "MIT"
+---
+# CharacterBody2D
+
+**Inherits:** PhysicsBody2D **<** CollisionObject2D **<** Node2D **<** CanvasItem **<** Node **<** Object
+
+A 2D physics body specialized for characters.
+
+## Property Descriptions
+
+float **safe_margin** = `0.08`
+
+- void **set_safe_margin**(value: float)
+
+The margin keeps collision recovery visible and stable.
+
+---
+
+Vector2 **velocity** = `Vector2(0, 0)`
+
+- void **set_velocity**(value: Vector2)
+
+Velocity used by movement methods.
+
+---
+
+## Method Descriptions
+
+Vector2 **get_position_delta**() const
+
+Returns the position delta from the last movement.
+"""
+
+
+BASE_BUTTON_PAGE = """---
+title: "BaseButton"
+godot_version: "4.7"
+source_path: "classes/class_basebutton.rst"
+license: "MIT"
+---
+# BaseButton
+
+**Inherits:** Control **<** CanvasItem **<** Node **<** Object
+
+## Signals
+
+**pressed**()
+
+Emitted when the button is pressed.
+
+---
+
+## Property Descriptions
+
+bool **disabled** = `false`
+
+- void **set_disabled**(value: bool)
+- bool **is_disabled**()
+
+If true, the button cannot be clicked.
+"""
+
+
+BUTTON_PAGE = """---
+title: "Button"
+godot_version: "4.7"
+source_path: "classes/class_button.rst"
+license: "MIT"
+---
+# Button
+
+**Inherits:** BaseButton **<** Control **<** CanvasItem **<** Node **<** Object
+
+## Theme Property Descriptions
+
+StyleBox **disabled**
+
+StyleBox used when the Button is disabled.
+
+---
+
+Color **font_color** = `Color(1, 1, 1, 1)`
+
+Default text color.
+"""
+
+
+INPUT_PAGE = """---
+title: "Input"
+godot_version: "4.7"
+source_path: "classes/class_input.rst"
+license: "MIT"
+---
+# Input
+
+Handles input actions.
+
+## Method Descriptions
+
+void **action_press**(action: StringName)
+
+Simulates an input action press.
+"""
+
+
+GLOBAL_SCOPE_PAGE = """---
+title: "@GlobalScope"
+godot_version: "4.7"
+source_path: "classes/class_@globalscope.rst"
+license: "MIT"
+---
+# @GlobalScope
+
+## Enumerations
+
+enum **Key**:
+
+Key **KEY_NONE** = `0`
+
+No key.
+
+Key **KEY_YEN** = `165`
+
+Yen symbol key.
+"""
+
+
+CAMERA_3D_PAGE = """---
+title: "Camera3D"
+godot_version: "4.7"
+source_path: "classes/class_camera3d.rst"
+license: "MIT"
+---
+# Camera3D
+
+**Inherits:** Node3D **<** Node **<** Object
+
+## Enumerations
+
+enum **ProjectionType**:
+
+ProjectionType **PROJECTION_PERSPECTIVE** = `0`
+
+Perspective projection.
+
+ProjectionType **PROJECTION_ORTHOGONAL** = `1`
+
+Orthogonal projection.
+
+ProjectionType **PROJECTION_FRUSTUM** = `2`
+
+Frustum projection.
+"""
+
+
+VECTOR_3_PAGE = r"""---
+title: "Vector3"
+godot_version: "4.7"
+source_path: "classes/class_vector3.rst"
+license: "MIT"
+---
+# Vector3
+
+## Operator Descriptions
+
+Vector3 **operator \***(right: float)
+
+Multiplies every component by the scalar.
+"""
+
+
+VECTOR_2_PAGE = """---
+title: "Vector2"
+godot_version: "4.7"
+source_path: "classes/class_vector2.rst"
+license: "MIT"
+---
+# Vector2
+
+## Constructor Descriptions
+
+Vector2 **Vector2**()
+
+Constructs a zero vector.
+
+---
+
+Vector2 **Vector2**(from: Vector2)
+
+Constructs a copy of a Vector2.
+
+---
+
+Vector2 **Vector2**(from: Vector2i)
+
+Constructs a Vector2 from a Vector2i.
+
+---
+
+Vector2 **Vector2**(x: float, y: float)
+
+Constructs a vector from two components.
+"""
+
+
+PACKED_VECTOR_2_ARRAY_PAGE = """---
+title: "PackedVector2Array"
+godot_version: "4.7"
+source_path: "classes/class_packedvector2array.rst"
+license: "MIT"
+---
+# PackedVector2Array
+
+An array of Vector2 values.
+"""
+
+
+JSON_PAGE = """---
+title: "JSON"
+godot_version: "4.7"
+source_path: "classes/class_json.rst"
+license: "MIT"
+---
+# JSON
+
+**Inherits:** RefCounted **<** Object
+
+A helper class for creating and parsing JSON data. Create an instance with `JSON.new()`.
+
+## Method Descriptions
+
+Error **parse**(json_text: String)
+
+Parses JSON text.
+"""
+
+
+CRYPTO_PAGE = """---
+title: "Crypto"
+godot_version: "4.7"
+source_path: "classes/class_crypto.rst"
+license: "MIT"
+---
+# Crypto
+
+**Inherits:** RefCounted **<** Object
+
+Provides cryptographic operations.
+"""
+
+
+AUTOLOAD_PAGE = """---
+title: "Singletons (Autoload)"
+godot_version: "4.7"
+source_path: "tutorials/scripting/singletons_autoload.rst"
+license: "CC-BY-3.0"
+---
+# Singletons (Autoload)
+
+Autoloading nodes and scripts makes shared state available between scenes.
+"""
+
+
+PLUGIN_PAGE = """---
+title: "Making plugins"
+godot_version: "4.7"
+source_path: "tutorials/plugins/editor/making_plugins.rst"
+license: "CC-BY-3.0"
+---
+# Making plugins
+
+## Registering autoloads and singletons
+
+An editor plugin can register an autoload singleton automatically.
+"""
+
+
+PAUSING_PAGE = """---
+title: "Pausing games and process mode"
+godot_version: "4.7"
+source_path: "tutorials/scripting/pausing_games.rst"
+license: "CC-BY-3.0"
+---
+# Pausing games and process mode
+
+Pausing interrupts the game while selected nodes keep processing.
+
+## How pausing works
+
+Set SceneTree.paused to true to pause the game.
+"""
+
+
+CPU_PAGE = """---
+title: "CPU optimization"
+godot_version: "4.7"
+source_path: "tutorials/performance/cpu_optimization.rst"
+license: "CC-BY-3.0"
+---
+# CPU optimization
+
+Removing nodes from the SceneTree can be faster than pausing them.
+"""
+
+
+class CorpusFixture:
+    def __init__(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        pages = {
+            "classes/class_object.md": (
+                "Object",
+                "classes/class_object.rst",
+                "MIT",
+                OBJECT_PAGE,
+            ),
+            "classes/class_node.md": ("Node", "classes/class_node.rst", "MIT", NODE_PAGE),
+            "classes/class_canvasitem.md": (
+                "CanvasItem",
+                "classes/class_canvasitem.rst",
+                "MIT",
+                CANVAS_ITEM_PAGE,
+            ),
+            "classes/class_node2d.md": (
+                "Node2D",
+                "classes/class_node2d.rst",
+                "MIT",
+                NODE_2D_PAGE,
+            ),
+            "classes/class_characterbody2d.md": (
+                "CharacterBody2D",
+                "classes/class_characterbody2d.rst",
+                "MIT",
+                CHARACTER_BODY_PAGE,
+            ),
+            "classes/class_basebutton.md": (
+                "BaseButton",
+                "classes/class_basebutton.rst",
+                "MIT",
+                BASE_BUTTON_PAGE,
+            ),
+            "classes/class_button.md": (
+                "Button",
+                "classes/class_button.rst",
+                "MIT",
+                BUTTON_PAGE,
+            ),
+            "classes/class_input.md": (
+                "Input",
+                "classes/class_input.rst",
+                "MIT",
+                INPUT_PAGE,
+            ),
+            "classes/class_@globalscope.md": (
+                "@GlobalScope",
+                "classes/class_@globalscope.rst",
+                "MIT",
+                GLOBAL_SCOPE_PAGE,
+            ),
+            "classes/class_camera3d.md": (
+                "Camera3D",
+                "classes/class_camera3d.rst",
+                "MIT",
+                CAMERA_3D_PAGE,
+            ),
+            "classes/class_vector3.md": (
+                "Vector3",
+                "classes/class_vector3.rst",
+                "MIT",
+                VECTOR_3_PAGE,
+            ),
+            "classes/class_vector2.md": (
+                "Vector2",
+                "classes/class_vector2.rst",
+                "MIT",
+                VECTOR_2_PAGE,
+            ),
+            "classes/class_packedvector2array.md": (
+                "PackedVector2Array",
+                "classes/class_packedvector2array.rst",
+                "MIT",
+                PACKED_VECTOR_2_ARRAY_PAGE,
+            ),
+            "classes/class_json.md": (
+                "JSON",
+                "classes/class_json.rst",
+                "MIT",
+                JSON_PAGE,
+            ),
+            "classes/class_crypto.md": (
+                "Crypto",
+                "classes/class_crypto.rst",
+                "MIT",
+                CRYPTO_PAGE,
+            ),
+            "getting_started/step_by_step/scripting_first_script.md": (
+                "Creating your first script",
+                "getting_started/step_by_step/scripting_first_script.rst",
+                "CC-BY-3.0",
+                TUTORIAL_PAGE,
+            ),
+            "getting_started/first_3d_game/02.player_input.md": (
+                "Player scene and input actions",
+                "getting_started/first_3d_game/02.player_input.rst",
+                "CC-BY-3.0",
+                INPUT_ACTIONS_PAGE,
+            ),
+            "tutorials/scripting/singletons_autoload.md": (
+                "Singletons (Autoload)",
+                "tutorials/scripting/singletons_autoload.rst",
+                "CC-BY-3.0",
+                AUTOLOAD_PAGE,
+            ),
+            "tutorials/plugins/editor/making_plugins.md": (
+                "Making plugins",
+                "tutorials/plugins/editor/making_plugins.rst",
+                "CC-BY-3.0",
+                PLUGIN_PAGE,
+            ),
+            "tutorials/scripting/pausing_games.md": (
+                "Pausing games and process mode",
+                "tutorials/scripting/pausing_games.rst",
+                "CC-BY-3.0",
+                PAUSING_PAGE,
+            ),
+            "tutorials/performance/cpu_optimization.md": (
+                "CPU optimization",
+                "tutorials/performance/cpu_optimization.rst",
+                "CC-BY-3.0",
+                CPU_PAGE,
+            ),
+        }
+        entries = []
+        for relative, (title, source_path, license_id, content) in pages.items():
+            page = self.root / relative
+            page.parent.mkdir(parents=True, exist_ok=True)
+            page.write_text(content, encoding="utf-8")
+            entries.append(
+                {
+                    "path": relative,
+                    "title": title,
+                    "source_path": source_path,
+                    "license": license_id,
+                }
+            )
+        manifest = {
+            "schema_version": 2,
+            "godot_docs": {"version": "4.7", "source_commit": "fixture-commit"},
+            "files": entries,
+        }
+        (self.root / "manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+
+    def close(self) -> None:
+        self.temporary.cleanup()
+
+
+class SearchTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fixture = CorpusFixture()
+        self.corpus = search_godot_docs.load_corpus(self.fixture.root)
+
+    def tearDown(self) -> None:
+        self.fixture.close()
+
+    def search(self, query: str, mode: str = "auto"):
+        parsed = search_godot_docs.parse_query(query, self.corpus)
+        return search_godot_docs.search_corpus(
+            self.corpus,
+            parsed,
+            mode=mode,
+            limit=5,
+            context=2,
+            max_chars=2000,
+        )
+
+    def test_exact_class_title_returns_document(self) -> None:
+        results = self.search("Node")
+        self.assertEqual(results[0].kind, "document")
+        self.assertEqual(results[0].document.relative_path, "classes/class_node.md")
+
+    def test_explicit_class_member_returns_only_member_description(self) -> None:
+        results = self.search("Node.queue_free")
+        self.assertEqual(results[0].kind, "method")
+        self.assertIn("Queues this node", results[0].excerpt)
+        self.assertNotIn("remove_child", results[0].excerpt)
+
+    def test_unscoped_identifier_ranks_exact_member_first(self) -> None:
+        results = self.search("queue_free")
+        self.assertEqual(results[0].kind, "method")
+        self.assertTrue(results[0].excerpt.startswith("void **queue_free**()"))
+
+    def test_explicit_inherited_member_falls_back_to_defining_class(self) -> None:
+        results = self.search("CharacterBody2D.queue_free")
+        self.assertEqual(results[0].kind, "method")
+        self.assertEqual(results[0].document.title, "Node")
+
+    def test_inherited_property_uses_declaration_not_body_mention(self) -> None:
+        results = self.search("CharacterBody2D.position")
+        self.assertEqual(results[0].kind, "property")
+        self.assertEqual(results[0].document.title, "Node2D")
+        self.assertTrue(results[0].excerpt.startswith("Vector2 **position**"))
+        self.assertNotIn("get_position_delta", results[0].excerpt)
+
+        visible = self.search("CharacterBody2D.visible")
+        self.assertEqual(visible[0].document.title, "CanvasItem")
+        self.assertTrue(visible[0].excerpt.startswith("bool **visible**"))
+
+    def test_explicit_member_does_not_search_descendants_or_unrelated_classes(self) -> None:
+        self.assertEqual(self.search("Node.velocity"), [])
+        self.assertEqual(self.search("CharacterBody2D.action_press"), [])
+
+    def test_script_property_beats_same_named_theme_property(self) -> None:
+        results = self.search("Button.disabled")
+        self.assertEqual(results[0].kind, "property")
+        self.assertEqual(results[0].document.title, "BaseButton")
+        self.assertTrue(results[0].excerpt.startswith("bool **disabled**"))
+        self.assertTrue(all(result.kind != "theme-property" for result in results))
+
+    def test_property_accessor_alias_resolves_to_property_declaration(self) -> None:
+        results = self.search("Button.is_disabled")
+        self.assertEqual(results[0].kind, "property")
+        self.assertEqual(results[0].document.title, "BaseButton")
+        self.assertIn("bool **is_disabled**()", results[0].excerpt)
+
+    def test_enumeration_value_returns_only_the_matching_item(self) -> None:
+        results = self.search("Camera3D.PROJECTION_ORTHOGONAL")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].kind, "enumeration")
+        self.assertIn("**PROJECTION_ORTHOGONAL**", results[0].excerpt)
+        self.assertNotIn("PROJECTION_PERSPECTIVE", results[0].excerpt)
+        self.assertNotIn("PROJECTION_FRUSTUM", results[0].excerpt)
+
+        global_value = self.search("Key.KEY_YEN")
+        self.assertEqual(global_value[0].document.title, "@GlobalScope")
+        self.assertIn("**KEY_YEN**", global_value[0].excerpt)
+        self.assertNotIn("KEY_NONE", global_value[0].excerpt)
+
+    def test_constant_returns_only_the_matching_item(self) -> None:
+        results = self.search("Node.NOTIFICATION_PROCESS")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].kind, "constant")
+        self.assertTrue(results[0].excerpt.startswith("**NOTIFICATION_PROCESS**"))
+        self.assertNotIn("**NOTIFICATION_READY**", results[0].excerpt)
+
+    def test_unknown_qualified_identifier_does_not_fall_back_to_concept_search(self) -> None:
+        self.assertEqual(self.search("Wrong.KEY_YEN"), [])
+
+    def test_operator_symbol_is_a_member_not_a_section_alias(self) -> None:
+        results = self.search("Vector3.operator *")
+        self.assertEqual(results[0].kind, "operator")
+        self.assertTrue(results[0].excerpt.startswith(r"Vector3 **operator \***"))
+
+    def test_empty_class_call_returns_only_the_default_constructor(self) -> None:
+        results = self.search("Vector2()")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].document.title, "Vector2")
+        self.assertEqual(results[0].kind, "constructor")
+        self.assertTrue(results[0].excerpt.startswith("Vector2 **Vector2**()"))
+        self.assertNotIn("x: float", results[0].excerpt)
+
+        explicit = self.search("Vector2.Vector2()")
+        self.assertEqual(len(explicit), 1)
+        self.assertEqual(explicit[0].excerpt, results[0].excerpt)
+
+        spaced = self.search("Vector2.Vector2( )")
+        self.assertEqual(len(spaced), 1)
+        self.assertEqual(spaced[0].excerpt, results[0].excerpt)
+
+    def test_constructor_name_without_parentheses_returns_all_overloads(self) -> None:
+        results = self.search("Vector2.Vector2")
+        self.assertEqual(len(results), 4)
+        self.assertTrue(all(result.kind == "constructor" for result in results))
+        self.assertTrue(any("x: float" in result.excerpt for result in results))
+
+    def test_constructor_arguments_select_matching_arity(self) -> None:
+        two_arguments = self.search("Vector2(1, 2)")
+        self.assertEqual(len(two_arguments), 1)
+        self.assertEqual(two_arguments[0].kind, "constructor")
+        self.assertIn("x: float, y: float", two_arguments[0].excerpt)
+
+        explicit = self.search("Vector2.Vector2(1, 2)")
+        self.assertEqual(explicit[0].excerpt, two_arguments[0].excerpt)
+
+        nested = self.search('Vector2(foo(1, 2), "a,b")')
+        self.assertEqual(nested[0].excerpt, two_arguments[0].excerpt)
+
+        collections = self.search('Vector2([1, 2], {"x": 1, "y": 2})')
+        self.assertEqual(collections[0].excerpt, two_arguments[0].excerpt)
+
+        one_argument = self.search("Vector2(1)")
+        self.assertEqual(len(one_argument), 2)
+        self.assertTrue(all(result.kind == "constructor" for result in one_argument))
+        self.assertTrue(all("from:" in result.excerpt for result in one_argument))
+
+        self.assertEqual(self.search("Vector2(1, 2, 3)"), [])
+        self.assertEqual(self.search("Vector2(1,"), [])
+
+    def test_object_new_falls_back_to_the_exact_class_document(self) -> None:
+        for query, title in (("JSON.new", "JSON"), ("Crypto.new()", "Crypto")):
+            with self.subTest(query=query):
+                results = self.search(query)
+                self.assertEqual(len(results), 1)
+                self.assertEqual(results[0].document.title, title)
+                self.assertEqual(results[0].kind, "document")
+                self.assertNotIn("**new**", results[0].excerpt)
+
+        self.assertEqual(self.search("Crypto.new( )")[0].document.title, "Crypto")
+
+    def test_constructor_routing_rejects_invalid_forms(self) -> None:
+        self.assertEqual(self.search("Vector2.new()"), [])
+        self.assertEqual(self.search("JSON()"), [])
+        self.assertEqual(self.search("Wrong.new()"), [])
+        self.assertEqual(self.search("JSON.new", mode="member"), [])
+
+        method = self.search("JSON.parse")
+        self.assertEqual(len(method), 1)
+        self.assertEqual(method[0].kind, "method")
+
+    def test_empty_call_suffix_requires_a_callable_declaration(self) -> None:
+        self.assertEqual(self.search("Button.font_color()"), [])
+        self.assertEqual(self.search("Button.disabled()"), [])
+        self.assertEqual(self.search("Node.NOTIFICATION_PROCESS()"), [])
+        self.assertEqual(self.search("Camera3D.PROJECTION_ORTHOGONAL()"), [])
+
+        accessor = self.search("Button.is_disabled()")
+        self.assertEqual(accessor[0].kind, "property")
+        signal = self.search("Button.pressed()")
+        self.assertEqual(signal[0].kind, "signal")
+
+    def test_space_after_class_name_is_scoped_only_for_section_aliases(self) -> None:
+        concept = search_godot_docs.parse_query("input actions", self.corpus)
+        self.assertIsNone(concept.class_document)
+        self.assertIsNone(concept.member)
+        results = self.search("input actions")
+        self.assertEqual(results[0].document.title, "Player scene and input actions")
+
+        section = search_godot_docs.parse_query("Node signals", self.corpus)
+        self.assertEqual(section.class_document.title, "Node")
+        self.assertEqual(section.member, "signals")
+
+    def test_class_section_alias_beats_member_mentions(self) -> None:
+        results = self.search("Node signals")
+        self.assertEqual(results[0].kind, "section")
+        self.assertEqual(results[0].heading, "Signals")
+
+    def test_exact_manual_heading_returns_bounded_section(self) -> None:
+        results = self.search("Hello, world!", mode="section")
+        self.assertEqual(results[0].heading, "Hello, world!")
+        self.assertIn("Indented block expected", results[0].excerpt)
+        self.assertNotIn("Move the sprite", results[0].excerpt)
+
+    def test_content_mode_rejects_pages_with_only_one_query_term(self) -> None:
+        results = self.search("Indented block expected", mode="content")
+        self.assertEqual(len(results), 1)
+        self.assertIn("Indented block expected", results[0].excerpt)
+
+    def test_content_mode_matches_phrase_across_wrapped_lines(self) -> None:
+        results = self.search("Print a message to the Output panel", mode="content")
+        self.assertEqual(len(results), 1)
+        self.assertIn("Print a message", results[0].excerpt)
+        self.assertIn("panel.", results[0].excerpt)
+
+    def test_small_title_inflection_difference_still_finds_document(self) -> None:
+        results = self.search("Creating our first script", mode="title")
+        self.assertEqual(results[0].kind, "document")
+        self.assertEqual(results[0].document.title, "Creating your first script")
+
+    def test_camel_case_terms_match_separate_query_words(self) -> None:
+        self.assertEqual(
+            search_godot_docs.query_terms("SceneTree.paused"),
+            ("scene", "tree", "pause"),
+        )
+
+    def test_unordered_inflected_title_terms_beat_incidental_content(self) -> None:
+        results = self.search("autoload singleton")
+        self.assertEqual(
+            results[0].document.relative_path,
+            "tutorials/scripting/singletons_autoload.md",
+        )
+        paths = [result.document.relative_path for result in results]
+        self.assertEqual(len(paths), len(set(paths)))
+
+    def test_page_level_coverage_beats_incidental_single_paragraph(self) -> None:
+        results = self.search("scene tree pausing")
+        self.assertEqual(
+            results[0].document.relative_path,
+            "tutorials/scripting/pausing_games.md",
+        )
+
+    def test_markdown_headings_inside_fences_are_ignored(self) -> None:
+        document = next(doc for doc in self.corpus.documents if not doc.is_class_reference)
+        lines = document.path.read_text(encoding="utf-8").splitlines()
+        headings = [section.title for section in search_godot_docs.parse_sections(lines)]
+        self.assertNotIn("This is code, not a document heading", headings)
+        self.assertIn("Moving forward", headings)
+
+    def test_json_cli_output_is_machine_readable(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            exit_code = search_godot_docs.main(
+                ["Node.queue_free", "--docs-root", str(self.fixture.root), "--json"]
+            )
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["source_commit"], "fixture-commit")
+        self.assertEqual(payload["results"][0]["kind"], "method")
+
+    def test_text_output_uses_compact_provenance_header(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            exit_code = search_godot_docs.main(
+                ["Node.queue_free", "--docs-root", str(self.fixture.root)]
+            )
+        output = stdout.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Godot 4.7 @ fixture-comm | auto | Node.queue_free", output)
+        self.assertNotIn("Root:", output)
+        self.assertNotIn(str(self.fixture.root), output)
+
+    def test_missing_explicit_member_does_not_recommend_content_fallback(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            exit_code = search_godot_docs.main(
+                ["Node.velocity", "--docs-root", str(self.fixture.root)]
+            )
+        output = stdout.getvalue()
+        self.assertEqual(exit_code, 1)
+        self.assertIn("No matching API declaration", output)
+        self.assertIn("documented inheritance chain", output)
+        self.assertNotIn("--mode content", output)
+
+    def test_ranked_text_compacts_results_after_top_three(self) -> None:
+        documents = list(self.corpus.documents[:5])
+        results = [
+            search_godot_docs.SearchResult(
+                document=document,
+                kind="content",
+                score=500 - index,
+                line=10 + index,
+                heading=f"Heading {index}",
+                excerpt=f"excerpt-{index}",
+            )
+            for index, document in enumerate(documents, 1)
+        ]
+        results[3] = search_godot_docs.SearchResult(
+            document=documents[3],
+            kind="method",
+            score=496,
+            line=14,
+            heading="Method Descriptions",
+            excerpt="void **fourth_method**()\n\nfourth method details",
+        )
+
+        stdout = io.StringIO()
+        parsed = search_godot_docs.parse_query("concept query", self.corpus)
+        with contextlib.redirect_stdout(stdout):
+            search_godot_docs.render_text(
+                self.corpus,
+                parsed,
+                "auto",
+                results,
+                show_best=False,
+            )
+        output = stdout.getvalue()
+
+        self.assertIn("Results: 5 (excerpts for top 3; remaining entries are indexed)", output)
+        self.assertIn("excerpt-1", output)
+        self.assertIn("excerpt-3", output)
+        self.assertNotIn("fourth method details", output)
+        self.assertIn("Declaration: void **fourth_method**()", output)
+        self.assertNotIn("excerpt-5", output)
+        self.assertIn(f"{documents[4].relative_path}:15", output)
+
+    def test_json_keeps_excerpts_for_all_ranked_results(self) -> None:
+        document = self.corpus.documents[0]
+        results = [
+            search_godot_docs.SearchResult(
+                document=document,
+                kind="content",
+                score=500 - index,
+                line=10 + index,
+                heading=None,
+                excerpt=f"json-excerpt-{index}",
+            )
+            for index in range(1, 6)
+        ]
+        stdout = io.StringIO()
+        parsed = search_godot_docs.parse_query("concept query", self.corpus)
+        with contextlib.redirect_stdout(stdout):
+            search_godot_docs.render_json(self.corpus, parsed, "auto", results)
+        payload = json.loads(stdout.getvalue())
+
+        self.assertEqual(payload["results"][3]["excerpt"], "json-excerpt-4")
+        self.assertEqual(payload["results"][4]["excerpt"], "json-excerpt-5")
+
+
+class FailureTests(unittest.TestCase):
+    def test_dot_version_is_a_safe_directory_component(self) -> None:
+        self.assertEqual(search_godot_docs.validate_version("4.7"), "4.7")
+
+    def test_version_rejects_path_traversal(self) -> None:
+        with self.assertRaises(argparse.ArgumentTypeError):
+            search_godot_docs.validate_version("../4.7")
+
+    def test_manifest_rejects_parent_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = {
+                "schema_version": 2,
+                "godot_docs": {"version": "4.7", "source_commit": "fixture"},
+                "files": [
+                    {
+                        "path": "../outside.md",
+                        "title": "Outside",
+                        "source_path": "outside.rst",
+                        "license": "CC-BY-3.0",
+                    }
+                ],
+            }
+            (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(search_godot_docs.CorpusError, "unsafe"):
+                search_godot_docs.load_corpus(root)
+
+    def test_missing_corpus_reports_deployer_action_without_building(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                exit_code = search_godot_docs.main(
+                    ["Node", "--docs-root", str(Path(temporary) / "missing")]
+                )
+            self.assertEqual(exit_code, 2)
+            self.assertIn("deployer must run scripts/build_godot_docs.py", stderr.getvalue())
+
+
+if __name__ == "__main__":
+    unittest.main()
