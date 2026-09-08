@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
+import sys
 import importlib.util
 import tempfile
 import unittest
@@ -37,6 +40,50 @@ class InputValidationTests(unittest.TestCase):
         with mock.patch.object(build_godot_docs, "python_version", return_value=(3, 9, 9)):
             with self.assertRaisesRegex(build_godot_docs.BuildError, "Python 3.10"):
                 build_godot_docs.require_build_python(executable)
+
+
+class BuildEnvironmentTests(unittest.TestCase):
+    def test_only_required_configuration_is_inherited(self) -> None:
+        supplied = {
+            "PATH": os.defpath, "https_proxy": "http://proxy.example:8080",
+            "SSL_CERT_FILE": "/example/ca.pem", "SystemRoot": "C:/Windows",
+            "GITHUB_TOKEN": "fake-github-secret", "OTHER_API_KEY": "fake-api-secret",
+            "PYTHONPATH": "/example/injected", "PIP_INDEX_URL": "https://private.example",
+            "PIP_CONFIG_FILE": "/example/pip.conf", "SPHINX_TAGS": "unexpected",
+        }
+        with mock.patch.dict(os.environ, supplied, clear=True):
+            environment = build_godot_docs.build_environment()
+            for key in ("PATH", "https_proxy", "SSL_CERT_FILE", "SystemRoot"):
+                self.assertEqual(environment[key], supplied[key])
+            for key in ("GITHUB_TOKEN", "OTHER_API_KEY", "PYTHONPATH", "PIP_INDEX_URL", "SPHINX_TAGS"):
+                self.assertNotIn(key, environment)
+            self.assertEqual(environment["PIP_CONFIG_FILE"], os.devnull)
+            self.assertEqual(os.environ["GITHUB_TOKEN"], supplied["GITHUB_TOKEN"])
+
+    def test_actual_child_cannot_read_parent_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "environment.json"
+            code = "import os,json,sys; open(sys.argv[1], 'w').write(json.dumps(dict(os.environ)))"
+            with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "fake-secret", "OTHER_API_KEY": "fake-secret"}):
+                build_godot_docs.run_logged(
+                    [sys.executable, "-c", code, str(output)],
+                    Path(temporary) / "build.log",
+                    env={"READTHEDOCS_VERSION": "4.7"},
+                )
+            environment = json.loads(output.read_text())
+            self.assertNotIn("GITHUB_TOKEN", environment)
+            self.assertNotIn("OTHER_API_KEY", environment)
+            self.assertEqual(environment["READTHEDOCS_VERSION"], "4.7")
+
+    def test_python_probes_also_use_clean_environment(self) -> None:
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "fake-secret"}):
+            with mock.patch.object(build_godot_docs.subprocess, "run") as run:
+                run.return_value.stdout = "[3, 12, 0]"
+                build_godot_docs.python_version(Path(sys.executable))
+                self.assertNotIn("GITHUB_TOKEN", run.call_args.kwargs["env"])
+                run.return_value.stdout = "{}"
+                build_godot_docs.installed_versions(Path(sys.executable))
+                self.assertNotIn("GITHUB_TOKEN", run.call_args.kwargs["env"])
 
 
 class ConversionHelpersTests(unittest.TestCase):

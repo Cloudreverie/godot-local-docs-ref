@@ -31,6 +31,10 @@ venv/
 *.log
 *~
 
+# 本地检索日志与反馈
+usage.jsonl
+feedback.jsonl
+
 # Agent 本地配置
 .codex/
 

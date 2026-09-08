@@ -20,6 +20,8 @@ python3 -B scripts/search_godot_docs.py "input actions" --version 4.7
 
 语料生成在 `references/godot-docs/<version>/`，不纳入 Git。重新构建已有版本时加 `--force`；遇到 GitHub API 匿名限流时，可通过环境变量提供 `GITHUB_TOKEN`。其他参数见各脚本的 `--help`。
 
+构建子进程仅继承必要的系统、代理和证书配置，不继承 `GITHUB_TOKEN` 等 API 密钥、Python 路径或 pip 源配置，并禁用 pip 配置文件。依赖默认从公共 PyPI 安装；私有源配置不自动沿用。代理地址中的凭据仍会传入子进程，这项措施不提供沙箱隔离。
+
 ### 作为 Skill 使用
 
 按所用助手的 Skill 安装方式部署包含已生成语料的仓库，保留目录结构和许可证文件。若助手不支持直接加载，可让它读取 `SKILL.md` 并按其中规则调用脚本。

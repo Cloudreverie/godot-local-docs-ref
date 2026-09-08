@@ -202,6 +202,33 @@ def validate_source_archive_commit(archive: Path, commit: str) -> None:
         )
 
 
+# 仅继承运行解释器、定位临时目录和访问网络所需的配置。
+BUILD_ENVIRONMENT_KEYS = frozenset({
+    "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "COMSPEC",
+    "PATHEXT", "TEMP", "TMP", "TMPDIR", "LANG", "LANGUAGE", "LC_ALL",
+    "LC_CTYPE", "TZ", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    "PIP_CERT",
+})
+
+
+def build_environment(overrides: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """限制子进程继承的环境；代理配置可能含凭据，此函数不提供沙箱隔离。"""
+    environment = {
+        key: value for key, value in os.environ.items()
+        if key.upper() in BUILD_ENVIRONMENT_KEYS
+    }
+    # 禁用用户 pip 配置和 Python 用户包，避免隐式加载私有源或用户扩展。
+    environment.update({
+        "PIP_CONFIG_FILE": os.devnull,
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONUTF8": "1",
+    })
+    if overrides:
+        environment.update(overrides)
+    return environment
+
+
 def python_version(executable: Path) -> Tuple[int, int, int]:
     command = [
         str(executable),
@@ -209,7 +236,7 @@ def python_version(executable: Path) -> Tuple[int, int, int]:
         "import json, sys; print(json.dumps(list(sys.version_info[:3])))",
     ]
     try:
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        result = subprocess.run(command, check=True, capture_output=True, text=True, env=build_environment())
         values = json.loads(result.stdout.strip())
         return int(values[0]), int(values[1]), int(values[2])
     except (OSError, subprocess.CalledProcessError, ValueError, json.JSONDecodeError, IndexError) as error:
@@ -244,7 +271,7 @@ def run_logged(command: Sequence[str], log_path: Path, cwd: Optional[Path] = Non
             process = subprocess.Popen(
                 list(command),
                 cwd=str(cwd) if cwd else None,
-                env=env,
+                env=build_environment(env),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -264,6 +291,7 @@ def run_logged(command: Sequence[str], log_path: Path, cwd: Optional[Path] = Non
                 ("Running Sphinx", "building [", "writing output", "build succeeded", "已转换 ")
             ):
                 print(line, end="", flush=True)
+        process.stdout.close()
         return_code = process.wait()
     if return_code != 0:
         excerpt = "\n".join(tail)
@@ -312,7 +340,7 @@ def installed_versions(python: Path) -> Dict[str, str]:
         "print(json.dumps({name: m.version(name) for name in names}, sort_keys=True))"
     )
     try:
-        result = subprocess.run([str(python), "-c", code], check=True, capture_output=True, text=True)
+        result = subprocess.run([str(python), "-c", code], check=True, capture_output=True, text=True, env=build_environment())
         payload = json.loads(result.stdout)
     except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
         raise BuildError(f"无法检查构建依赖版本：{error}") from error
@@ -362,15 +390,10 @@ def build_html(
     only_paths: Sequence[str],
     log_path: Path,
 ) -> None:
-    environment = os.environ.copy()
-    environment.pop("SPHINX_TAGS", None)
-    environment.update(
-        {
-            "READTHEDOCS_VERSION": version,
-            "READTHEDOCS_LANGUAGE": "en",
-            "PYTHONUTF8": "1",
-        }
-    )
+    environment = {
+        "READTHEDOCS_VERSION": version,
+        "READTHEDOCS_LANGUAGE": "en",
+    }
     command = [
         str(python),
         "-m",
