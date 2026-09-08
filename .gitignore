@@ -11,28 +11,28 @@ __pycache__/
 .venv/
 venv/
 
-# Test / tooling caches
+# 测试与工具缓存
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 
-# IDE / editor
+# IDE 与编辑器
 .idea/
 .vscode/
 
-# Environment / secrets
+# 环境配置与密钥
 .env
 .env.*
 !.env.example
 
-# Temporary files
+# 临时文件
 *.tmp
 *.temp
 *.log
 *~
 
-# AI Agents
+# Agent 本地配置
 .codex/
 
-# Generated Godot documentation corpus
+# 自动生成的 Godot 文档语料
 references/godot-docs/

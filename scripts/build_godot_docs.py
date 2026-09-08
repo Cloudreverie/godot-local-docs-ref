@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Build an Agent-oriented local Markdown copy of the Godot documentation.
+"""构建供 Agent 使用的 Godot 文档本地 Markdown 副本。
 
-This is a deployment tool. It downloads a pinned godot-docs source snapshot,
-builds the official reStructuredText sources with Sphinx in an isolated virtual
-environment, converts the resulting article HTML to Markdown, validates the
-corpus, and publishes it atomically.
+此部署工具下载固定版本的 godot-docs 源码快照，在隔离的虚拟环境中使用 Sphinx
+构建官方 reStructuredText 源文件，将生成的正文 HTML 转为 Markdown，
+校验语料后以原子方式发布。
 
-The script itself uses only the Python standard library. Build dependencies are
-installed into a temporary virtual environment and never into the caller's
-Python environment.
+脚本本身仅使用 Python 标准库。构建依赖安装在临时虚拟环境中，
+不会安装到调用者的 Python 环境。
 """
 
 from __future__ import annotations
@@ -52,7 +50,7 @@ DEFAULT_REFERENCES_ROOT = SKILL_DIR / "references" / "godot-docs"
 
 
 class BuildError(RuntimeError):
-    """An expected, user-facing build failure."""
+    """预期内、可向用户报告的构建失败。"""
 
 
 def log(message: str) -> None:
@@ -74,7 +72,7 @@ def utc_now() -> str:
 def validate_version(value: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", value):
         raise argparse.ArgumentTypeError(
-            "version must start with a letter or digit and contain only letters, digits, '.', '_', '+', or '-'"
+            "version 必须以字母或数字开头，且只能包含字母、数字、'.'、'_'、'+' 或 '-'"
         )
     return value
 
@@ -87,7 +85,7 @@ def normalize_source_path(value: str) -> str:
         candidate += ".rst"
     path = Path(candidate)
     if path.is_absolute() or ".." in path.parts:
-        raise argparse.ArgumentTypeError("--only paths must be relative source .rst paths")
+        raise argparse.ArgumentTypeError("--only 路径必须是 .rst 源文件的相对路径")
     return path.as_posix()
 
 
@@ -119,7 +117,7 @@ def read_url(url: str, timeout: int = 60, attempts: int = 3) -> bytes:
             if attempt == attempts:
                 break
             time.sleep(2 ** (attempt - 1))
-    raise BuildError(f"failed to download {url}: {last_error}")
+    raise BuildError(f"下载 {url} 失败：{last_error}")
 
 
 def download_file(url: str, destination: Path, timeout: int = 60, attempts: int = 3) -> None:
@@ -138,7 +136,7 @@ def download_file(url: str, destination: Path, timeout: int = 60, attempts: int 
             if attempt == attempts:
                 break
             time.sleep(2 ** (attempt - 1))
-    raise BuildError(f"failed to download {url}: {last_error}")
+    raise BuildError(f"下载 {url} 失败：{last_error}")
 
 
 def resolve_github_commit(repository: str, ref: str) -> str:
@@ -150,10 +148,10 @@ def resolve_github_commit(repository: str, ref: str) -> str:
     try:
         payload = json.loads(read_url(url).decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise BuildError(f"GitHub returned invalid commit metadata for {repository}@{ref}: {error}") from error
+        raise BuildError(f"GitHub 返回的 {repository}@{ref} commit 元数据无效：{error}") from error
     commit = payload.get("sha")
     if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", commit):
-        raise BuildError(f"GitHub did not return a valid commit for {repository}@{ref}")
+        raise BuildError(f"GitHub 未返回 {repository}@{ref} 的有效 commit")
     return commit.lower()
 
 
@@ -171,18 +169,18 @@ def extract_zip_safely(archive: Path, destination: Path) -> Path:
     with zipfile.ZipFile(archive) as bundle:
         members = bundle.infolist()
         if not members:
-            raise BuildError(f"source archive is empty: {archive}")
+            raise BuildError(f"源码归档为空：{archive}")
         for member in members:
             member_path = (destination / member.filename).resolve()
             if not is_within_directory(root, member_path):
-                raise BuildError(f"unsafe path in source archive: {member.filename}")
+                raise BuildError(f"源码归档中的路径不安全：{member.filename}")
         bundle.extractall(destination)
 
     top_levels = sorted(
         path for path in destination.iterdir() if path.is_dir() and not path.name.startswith("__MACOSX")
     )
     if len(top_levels) != 1:
-        raise BuildError(f"expected one source directory in {archive}, found {len(top_levels)}")
+        raise BuildError(f"{archive} 应包含一个源码目录，实际发现 {len(top_levels)} 个")
     return top_levels[0]
 
 
@@ -196,11 +194,11 @@ def validate_source_archive_commit(archive: Path, commit: str) -> None:
                 if member.filename and Path(member.filename).parts
             }
     except (OSError, zipfile.BadZipFile) as error:
-        raise BuildError(f"cannot read cached source archive {archive}: {error}") from error
+        raise BuildError(f"无法读取缓存的源码归档 {archive}：{error}") from error
     if roots != {expected_root}:
-        found = ", ".join(sorted(roots)) or "no top-level directory"
+        found = ", ".join(sorted(roots)) or "没有顶层目录"
         raise BuildError(
-            f"cached source archive does not match commit {commit}: expected {expected_root}, found {found}"
+            f"缓存的源码归档与 commit {commit} 不匹配：预期为 {expected_root}，实际为 {found}"
         )
 
 
@@ -215,7 +213,7 @@ def python_version(executable: Path) -> Tuple[int, int, int]:
         values = json.loads(result.stdout.strip())
         return int(values[0]), int(values[1]), int(values[2])
     except (OSError, subprocess.CalledProcessError, ValueError, json.JSONDecodeError, IndexError) as error:
-        raise BuildError(f"cannot execute build Python {executable}: {error}") from error
+        raise BuildError(f"无法执行构建用的 Python {executable}：{error}") from error
 
 
 def require_build_python(executable: Path) -> Tuple[int, int, int]:
@@ -224,8 +222,8 @@ def require_build_python(executable: Path) -> Tuple[int, int, int]:
         required = ".".join(str(part) for part in MIN_BUILD_PYTHON)
         actual = ".".join(str(part) for part in version)
         raise BuildError(
-            f"Godot's Sphinx build requires Python {required}+; {executable} is Python {actual}. "
-            "Pass a newer interpreter with --python."
+            f"Godot 的 Sphinx 构建需要 Python {required}+；{executable} 的版本为 Python {actual}。"
+            "请通过 --python 指定更新的解释器。"
         )
     return version
 
@@ -254,7 +252,7 @@ def run_logged(command: Sequence[str], log_path: Path, cwd: Optional[Path] = Non
                 errors="replace",
             )
         except OSError as error:
-            raise BuildError(f"failed to start command {command[0]}: {error}") from error
+            raise BuildError(f"无法启动命令 {command[0]}：{error}") from error
 
         assert process.stdout is not None
         tail: List[str] = []
@@ -263,15 +261,15 @@ def run_logged(command: Sequence[str], log_path: Path, cwd: Optional[Path] = Non
             tail.append(line.rstrip())
             tail = tail[-30:]
             if line.startswith(
-                ("Running Sphinx", "building [", "writing output", "build succeeded", "Converted ")
+                ("Running Sphinx", "building [", "writing output", "build succeeded", "已转换 ")
             ):
                 print(line, end="", flush=True)
         return_code = process.wait()
     if return_code != 0:
         excerpt = "\n".join(tail)
         raise BuildError(
-            f"command failed with exit code {return_code}: {rendered}\n"
-            f"Last output:\n{excerpt}\nFull log: {log_path}"
+            f"命令执行失败，退出码为 {return_code}：{rendered}\n"
+            f"最后的输出：\n{excerpt}\n完整日志： {log_path}"
         )
 
 
@@ -282,7 +280,7 @@ def create_build_environment(build_python: Path, venv_dir: Path, source_dir: Pat
     python = venv_python(venv_dir)
     requirements = source_dir / "requirements.txt"
     if not requirements.is_file():
-        raise BuildError(f"upstream requirements.txt not found in {source_dir}")
+        raise BuildError(f"在 {source_dir} 中找不到上游 requirements.txt")
     run_logged(
         [
             str(python),
@@ -317,14 +315,14 @@ def installed_versions(python: Path) -> Dict[str, str]:
         result = subprocess.run([str(python), "-c", code], check=True, capture_output=True, text=True)
         payload = json.loads(result.stdout)
     except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
-        raise BuildError(f"failed to inspect build dependency versions: {error}") from error
+        raise BuildError(f"无法检查构建依赖版本：{error}") from error
     return {str(key): str(value) for key, value in payload.items()}
 
 
 def validate_source_tree(source_dir: Path) -> None:
     for required in ("conf.py", "requirements.txt", "LICENSE.txt", "index.rst"):
         if not (source_dir / required).is_file():
-            raise BuildError(f"upstream source tree is missing {required}: {source_dir}")
+            raise BuildError(f"上游源码树缺少 {required}：{source_dir}")
 
 
 def reuse_build_assets(reuse_root: Path, commit: str) -> Tuple[Path, Path, Path, str, Dict[str, str]]:
@@ -332,11 +330,11 @@ def reuse_build_assets(reuse_root: Path, commit: str) -> Tuple[Path, Path, Path,
     source_dir = reuse_root / "source" / f"godot-docs-{commit}"
     python = venv_python(reuse_root / "venv")
     if not archive.is_file():
-        raise BuildError(f"cached source archive not found: {archive}")
+        raise BuildError(f"找不到缓存的源码归档：{archive}")
     validate_source_archive_commit(archive, commit)
     validate_source_tree(source_dir)
     if not python.is_file():
-        raise BuildError(f"cached build Python not found: {python}")
+        raise BuildError(f"找不到缓存的构建用 Python：{python}")
     packages = installed_versions(python)
     return archive, source_dir, python, sha256_file(archive), packages
 
@@ -346,9 +344,9 @@ def validate_only_paths(source_dir: Path, values: Sequence[str]) -> List[str]:
     for value in values:
         source_path = normalize_source_path(value)
         if source_path in EXCLUDED_SOURCE_PATHS:
-            raise BuildError(f"excluded generated/UI page cannot be selected: {source_path}")
+            raise BuildError(f"不能选择已排除的生成页面或界面页面：{source_path}")
         if not (source_dir / source_path).is_file():
-            raise BuildError(f"selected source page does not exist: {source_path}")
+            raise BuildError(f"所选源页面不存在：{source_path}")
         if source_path not in normalized:
             normalized.append(source_path)
     return normalized
@@ -432,42 +430,41 @@ def invoke_converter(
 
 
 def write_attribution(output_dir: Path, version: str, ref: str, commit: str) -> None:
-    content = f"""# Source attribution
+    content = f"""# 来源与署名
 
-This local corpus was generated from the official Godot Engine documentation.
+本地语料由 Godot Engine 官方文档生成。
 
-- Repository: {REPOSITORY_URL}
-- Requested ref: `{ref}`
-- Resolved commit: `{commit}`
-- Documentation version: `{version}`
-- Generator: `build_godot_docs.py` {SCRIPT_VERSION}
+- 仓库： {REPOSITORY_URL}
+- 请求的 ref： `{ref}`
+- 解析得到的 commit： `{commit}`
+- 文档版本： `{version}`
+- 生成器： `build_godot_docs.py` {SCRIPT_VERSION}
 
-Except for pages under `classes/`, the upstream documentation is licensed under
-CC BY 3.0 and is attributed to Juan Linietsky, Ariel Manzur, and the Godot
-community. Pages under `classes/` are derived from the Godot Engine source and
-are licensed under the MIT License. See the accompanying license files and each
-page's frontmatter.
+除 `classes/` 下的页面外，上游文档采用 CC BY 3.0 许可证，
+署名为 Juan Linietsky、Ariel Manzur 和 Godot 社区。`classes/` 下的页面
+源自 Godot Engine 源码，采用 MIT License。详情见随附的许可证文件
+及各页面的前置元数据。
 """
     (output_dir / "SOURCE-ATTRIBUTION.md").write_text(content, encoding="utf-8")
 
 
 def validate_corpus(output_dir: Path, files: Sequence[Dict[str, Any]]) -> None:
     if not files:
-        raise BuildError("conversion produced no Markdown pages")
+        raise BuildError("转换未生成任何 Markdown 页面")
     seen: set[str] = set()
     for entry in files:
         relative = entry.get("path")
         expected_hash = entry.get("sha256")
         if not isinstance(relative, str) or not relative.endswith(".md"):
-            raise BuildError(f"invalid manifest page path: {relative!r}")
+            raise BuildError(f"manifest 页面路径无效：{relative!r}")
         if relative in seen:
-            raise BuildError(f"duplicate output page in manifest: {relative}")
+            raise BuildError(f"manifest 中的输出页面重复：{relative}")
         seen.add(relative)
         path = output_dir / relative
         if not path.is_file():
-            raise BuildError(f"manifest page is missing: {relative}")
+            raise BuildError(f"manifest 中的页面缺失：{relative}")
         if sha256_file(path) != expected_hash:
-            raise BuildError(f"manifest hash mismatch: {relative}")
+            raise BuildError(f"manifest 中的哈希值不匹配：{relative}")
 
 
 def publish_atomically(prepared_dir: Path, output_dir: Path, force: bool) -> None:
@@ -475,7 +472,7 @@ def publish_atomically(prepared_dir: Path, output_dir: Path, force: bool) -> Non
     parent = output_dir.parent
     parent.mkdir(parents=True, exist_ok=True)
     if output_dir.exists() and not force:
-        raise BuildError(f"output already exists: {output_dir}; use --force to replace it")
+        raise BuildError(f"输出已存在：{output_dir}；使用 --force 替换")
 
     staging = parent / f".{output_dir.name}.staging-{uuid.uuid4().hex}"
     backup = parent / f".{output_dir.name}.backup-{uuid.uuid4().hex}"
@@ -503,7 +500,7 @@ def build(args: argparse.Namespace) -> Path:
     reuse_root = Path(args.reuse_workdir).expanduser().resolve() if args.reuse_workdir else None
     if reuse_root:
         if not reuse_root.is_dir():
-            raise BuildError(f"reusable work directory not found: {reuse_root}")
+            raise BuildError(f"找不到可复用的工作目录：{reuse_root}")
         work_parent = reuse_root
     else:
         require_build_python(build_python)
@@ -513,32 +510,32 @@ def build(args: argparse.Namespace) -> Path:
     prefix = "godot-docs-reuse-run-" if reuse_root else "godot-docs-build-"
     work_dir = Path(tempfile.mkdtemp(prefix=prefix, dir=str(work_parent) if work_parent else None))
     log_path = work_dir / "build.log"
-    log(f"Work directory: {work_dir}")
+    log(f"工作目录：{work_dir}")
 
     try:
-        log(f"[1/7] Resolving {REPOSITORY}@{source_ref}")
+        log(f"[1/7] 解析 {REPOSITORY}@{source_ref}")
         commit = resolve_github_commit(REPOSITORY, source_ref)
-        log(f"Resolved commit: {commit}")
+        log(f"已解析 commit：{commit}")
 
         archive_url = f"https://codeload.github.com/{REPOSITORY}/zip/{commit}"
         if reuse_root:
-            log(f"[2/7] Reusing the pinned source archive and tree from {reuse_root}")
+            log(f"[2/7] 复用 {reuse_root} 中固定版本的源码归档和源码树")
             archive, source_dir, python, archive_hash, packages = reuse_build_assets(reuse_root, commit)
-            log("[3/7] Reusing the validated isolated Sphinx build environment")
+            log("[3/7] 复用已校验的隔离 Sphinx 构建环境")
         else:
-            log("[2/7] Downloading the pinned source archive")
+            log("[2/7] 下载固定版本的源码归档")
             archive = work_dir / "godot-docs.zip"
             download_file(archive_url, archive)
             archive_hash = sha256_file(archive)
             source_dir = extract_zip_safely(archive, work_dir / "source")
             validate_source_tree(source_dir)
 
-            log("[3/7] Creating an isolated Sphinx build environment")
+            log("[3/7] 创建隔离的 Sphinx 构建环境")
             python = create_build_environment(build_python, work_dir / "venv", source_dir, log_path)
             packages = installed_versions(python)
         only_paths = validate_only_paths(source_dir, args.only)
 
-        log("[4/7] Building the official documentation HTML with Sphinx")
+        log("[4/7] 使用 Sphinx 构建官方文档 HTML")
         html_dir = work_dir / "html"
         build_html(
             python,
@@ -551,7 +548,7 @@ def build(args: argparse.Namespace) -> Path:
             log_path,
         )
 
-        log("[5/7] Converting article HTML to Agent-oriented Markdown")
+        log("[5/7] 将正文 HTML 转为供 Agent 使用的 Markdown")
         prepared_dir = work_dir / "prepared"
         fragment_path = work_dir / "pages.json"
         invoke_converter(
@@ -569,11 +566,11 @@ def build(args: argparse.Namespace) -> Path:
         try:
             files = json.loads(fragment_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
-            raise BuildError(f"converter did not produce valid page metadata: {error}") from error
+            raise BuildError(f"转换器未生成有效的页面元数据：{error}") from error
         if not isinstance(files, list):
-            raise BuildError("converter page metadata must be a list")
+            raise BuildError("转换器页面元数据必须为列表")
 
-        log("[6/7] Writing provenance, licenses, and manifest")
+        log("[6/7] 写入来源信息、许可证和 manifest")
         shutil.copy2(source_dir / "LICENSE.txt", prepared_dir / "LICENSE-GODOT-DOCS.txt")
         engine_license_url = f"https://raw.githubusercontent.com/godotengine/godot/{urllib.parse.quote(version, safe='')}/LICENSE.txt"
         download_file(engine_license_url, prepared_dir / "LICENSE-GODOT-CLASSES.txt")
@@ -625,78 +622,78 @@ def build(args: argparse.Namespace) -> Path:
         write_json(prepared_dir / "manifest.json", manifest)
         validate_corpus(prepared_dir, files)
 
-        log("[7/7] Publishing the validated corpus atomically")
+        log("[7/7] 以原子方式发布已校验的语料")
         publish_atomically(prepared_dir, output_dir, args.force)
-        log(f"Built {len(files)} pages at {output_dir}")
+        log(f"已在 {output_dir} 构建 {len(files)} 个页面")
         return output_dir
     finally:
         if args.keep_workdir:
-            log(f"Kept work directory: {work_dir}")
+            log(f"已保留工作目录：{work_dir}")
         else:
             shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Build local Agent-oriented Markdown from the official Godot documentation source.",
+        description="从 Godot 官方文档源码构建供 Agent 使用的本地 Markdown。",
         epilog=(
-            "The command downloads the complete pinned godot-docs source archive (currently about 200 MB), "
-            "creates a temporary virtual environment, and needs additional temporary disk space. "
-            "--only limits the pages built, not the source download."
+            "此命令下载固定版本的完整 godot-docs 源码归档（当前约 200 MB），"
+            "创建临时虚拟环境，并需要额外的临时磁盘空间。"
+            "--only 仅限制构建的页面，不缩减源码下载范围。"
         ),
     )
     parser.add_argument(
         "--version",
         type=validate_version,
         default="4.7",
-        help="Godot documentation version and output directory name (default: 4.7)",
+        help="Godot 文档版本及输出目录名称（默认：4.7）",
     )
     parser.add_argument(
         "--ref",
-        help="godot-docs Git ref to resolve and pin (default: same as --version)",
+        help="待解析并固定的 godot-docs Git ref（默认：与 --version 相同）",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        help="output directory (default: <skill>/references/godot-docs/<version>)",
+        help="输出目录（默认：<skill>/references/godot-docs/<version>）",
     )
     parser.add_argument(
         "--python",
         default=sys.executable,
-        help="Python 3.10+ executable used for the isolated Sphinx environment",
+        help="隔离 Sphinx 环境使用的 Python 3.10+ 可执行文件",
     )
     parser.add_argument(
         "--jobs",
         default="auto",
-        help="parallel Sphinx jobs: 'auto' or a positive integer (default: auto)",
+        help="Sphinx 并行任务数：'auto' 或正整数（默认：auto）",
     )
     parser.add_argument(
         "--only",
         action="append",
         default=[],
         metavar="SOURCE.rst",
-        help="build only a selected source page; repeat for smoke tests",
+        help="仅构建所选源页面；可重复指定，用于冒烟测试",
     )
     parser.add_argument(
         "--force",
         action="store_true",
-        help="replace an existing generated corpus after the new one validates",
+        help="新语料校验通过后替换已有的生成语料",
     )
     work_group = parser.add_mutually_exclusive_group()
     work_group.add_argument(
         "--work-dir",
         type=Path,
-        help="parent directory for temporary build files",
+        help="临时构建文件的父目录",
     )
     work_group.add_argument(
         "--reuse-workdir",
         type=Path,
-        help="reuse archive, source tree, and virtual environment from a previous --keep-workdir build",
+        help="复用先前通过 --keep-workdir 保留的归档、源码树和虚拟环境",
     )
     parser.add_argument(
         "--keep-workdir",
         action="store_true",
-        help="keep temporary source, HTML, virtual environment, and logs",
+        help="保留临时源码、HTML、虚拟环境和日志",
     )
     return parser
 
@@ -707,9 +704,9 @@ def validate_jobs(value: str) -> str:
     try:
         number = int(value)
     except ValueError as error:
-        raise BuildError("--jobs must be 'auto' or a positive integer") from error
+        raise BuildError("--jobs 必须为 'auto' 或正整数") from error
     if number < 1:
-        raise BuildError("--jobs must be 'auto' or a positive integer")
+        raise BuildError("--jobs 必须为 'auto' 或正整数")
     return str(number)
 
 
@@ -862,7 +859,7 @@ def convert_page(
         from bs4 import BeautifulSoup
         from markdownify import MarkdownConverter
     except ImportError as error:
-        raise BuildError(f"converter dependency is missing in the isolated environment: {error}") from error
+        raise BuildError(f"隔离环境中缺少转换器依赖：{error}") from error
 
     relative_html = html_path.relative_to(html_dir)
     source_relative = relative_html.with_suffix(".rst")
@@ -875,7 +872,7 @@ def convert_page(
         or soup.select_one("div.document")
     )
     if article is None:
-        raise BuildError(f"article body not found in {relative_html.as_posix()}")
+        raise BuildError(f"在 {relative_html.as_posix()} 中找不到正文")
     heading = article.find("h1")
     title = heading.get_text(" ", strip=True).removesuffix("").strip() if heading else source_relative.stem
     if not title:
@@ -954,7 +951,7 @@ def internal_convert(argv: Sequence[str]) -> int:
         built_sources = {path.relative_to(html_dir).with_suffix(".rst").as_posix() for path in candidates}
         missing = sorted(only - built_sources)
         if missing:
-            raise BuildError(f"Sphinx did not build selected pages: {', '.join(missing)}")
+            raise BuildError(f"Sphinx 未构建所选页面：{', '.join(missing)}")
 
     files: List[Dict[str, Any]] = []
     for index, html_path in enumerate(candidates, 1):
@@ -970,9 +967,9 @@ def internal_convert(argv: Sequence[str]) -> int:
             )
         )
         if index % 100 == 0:
-            log(f"Converted {index}/{len(candidates)} pages")
+            log(f"已转换 {index}/{len(candidates)} 个页面")
     write_json(args.fragment, files)
-    log(f"Converted {len(files)} pages")
+    log(f"已转换 {len(files)} 个页面")
     return 0
 
 

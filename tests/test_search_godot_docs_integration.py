@@ -18,16 +18,16 @@ SPEC.loader.exec_module(search_godot_docs)
 
 
 class Godot47CorpusRegressionTests(unittest.TestCase):
-    """Exercise search behavior against the generated official Godot 4.7 corpus."""
+    """使用生成的 Godot 4.7 官方语料验证检索行为。"""
 
     @classmethod
     def setUpClass(cls) -> None:
         if not DOCS_ROOT.is_dir():
             raise unittest.SkipTest(
-                "Godot 4.7 docs are not built; run scripts/build_godot_docs.py first"
+                "尚未构建 Godot 4.7 文档；请先运行 scripts/build_godot_docs.py"
             )
 
-        # A present but malformed or incomplete corpus is a regression, not a skip.
+        # 语料已存在但格式错误或不完整时，应判为回归失败，不能跳过。
         cls.corpus = search_godot_docs.load_corpus(DOCS_ROOT)
         cls.documents_by_path = {
             document.relative_path: document for document in cls.corpus.documents
@@ -65,7 +65,7 @@ class Godot47CorpusRegressionTests(unittest.TestCase):
         self.assertTrue(required_paths.issubset(self.documents_by_path))
 
     def test_project_derived_inherited_members_resolve_to_defining_classes(self) -> None:
-        # These cases were selected from real Godot 4.7 usage in 实际 Godot 游戏项目.
+        # 这些用例选自 实际 Godot 游戏项目 中 Godot 4.7 的真实用法。
         cases = (
             ("Button.disabled", "BaseButton", "property", "disabled"),
             ("Button.visible", "CanvasItem", "property", "visible"),

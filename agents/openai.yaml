@@ -1,7 +1,7 @@
 interface:
-  display_name: "Godot Local Docs Reference"
+  display_name: "Godot 本地文档参考"
   short_description: "检索版本匹配的本地 Godot 文档并核实引擎细节"
-  default_prompt: "Use $godot-local-docs-ref to verify this Godot detail against the matching locally generated documentation version."
+  default_prompt: "使用 $godot-local-docs-ref，依据本地生成且版本匹配的文档核实这项 Godot 细节。"
 
 policy:
   allow_implicit_invocation: true

@@ -82,7 +82,7 @@ class FilesystemSafetyTests(unittest.TestCase):
             with zipfile.ZipFile(archive, "w") as bundle:
                 bundle.writestr("godot-docs-abc/index.rst", "Godot")
             build_godot_docs.validate_source_archive_commit(archive, "abc")
-            with self.assertRaisesRegex(build_godot_docs.BuildError, "does not match commit"):
+            with self.assertRaisesRegex(build_godot_docs.BuildError, "与 commit .* 不匹配"):
                 build_godot_docs.validate_source_archive_commit(archive, "def")
 
     def test_zip_extraction_requires_paths_inside_destination(self) -> None:
@@ -97,7 +97,7 @@ class FilesystemSafetyTests(unittest.TestCase):
             unsafe_archive = root / "unsafe.zip"
             with zipfile.ZipFile(unsafe_archive, "w") as bundle:
                 bundle.writestr("../outside.txt", "unsafe")
-            with self.assertRaisesRegex(build_godot_docs.BuildError, "unsafe path"):
+            with self.assertRaisesRegex(build_godot_docs.BuildError, "路径不安全"):
                 build_godot_docs.extract_zip_safely(unsafe_archive, root / "unsafe")
 
     def test_force_publish_replaces_only_after_preparation(self) -> None:
@@ -110,7 +110,7 @@ class FilesystemSafetyTests(unittest.TestCase):
             (prepared / "new.txt").write_text("new", encoding="utf-8")
             (output / "old.txt").write_text("old", encoding="utf-8")
 
-            with self.assertRaisesRegex(build_godot_docs.BuildError, "use --force"):
+            with self.assertRaisesRegex(build_godot_docs.BuildError, "使用 --force"):
                 build_godot_docs.publish_atomically(prepared, output, force=False)
             self.assertTrue((output / "old.txt").is_file())
 

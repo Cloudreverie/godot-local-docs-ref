@@ -1,35 +1,35 @@
 ---
 name: godot-local-docs-ref
-description: Use locally generated, version-matched Godot documentation when the user requests documentation-backed guidance or when an answer or action materially depends on an engine fact that may vary by version, may have changed, is uncertain or disputed, or requires exact confirmation.
+description: 当用户要求以文档为依据提供指导，或回答与操作实质上依赖可能因版本而异、可能已变化、尚不确定、存在争议或需要精确核实的引擎事实时，使用本地生成且版本匹配的 Godot 文档。
 ---
 
-# Godot local documentation reference
+# Godot 本地文档参考
 
-Establish reliable, version-matched Godot engine knowledge from the locally generated documentation while keeping retrieval focused.
+通过本地生成的文档确认可靠、版本匹配的 Godot 引擎知识，并保持检索范围集中。
 
-## Decide whether to search
+## 判断是否需要检索
 
-Search when a reliable result materially depends on a Godot-specific fact and at least one of these conditions applies:
+当可靠的结果实质上依赖某项 Godot 特有事实，且满足以下任一条件时，检索文档：
 
-- The fact may differ across Godot versions or may have changed.
-- An exact API contract, default, lifecycle rule, workflow, warning, or error meaning affects the result.
-- The available context leaves the engine behavior uncertain or conflicting.
-- The user requests documentation-backed or version-specific confirmation.
+- 该事实可能因 Godot 版本而异，或可能已经变化。
+- 精确的 API 契约、默认值、生命周期规则、工作流程、警告或错误含义会影响结果。
+- 现有上下文无法确定引擎行为，或存在相互冲突的信息。
+- 用户要求以文档为依据或针对特定版本进行核实。
 
-Use project inspection for facts about the user's files and runtime state. Combine project evidence with documentation when the observed state also depends on an engine contract.
+用户文件和运行状态方面的事实应通过项目检查确认。如果观察到的状态也依赖引擎契约，应结合项目证据与文档判断。
 
-Reuse facts already established in the current task. Start with one focused query and broaden only when its result is insufficient.
+复用当前任务中已经确认的事实。先进行一次聚焦查询，仅在结果不足时扩大范围。
 
-## Select the documentation version
+## 选择文档版本
 
-- Determine the target version from the request or reliable project evidence, then use `references/godot-docs/<version>` with `--version <version>`.
-- When the version is unknown and exactly one corpus is installed, use it and identify its version in the answer.
-- When several corpora are installed and the version affects the conclusion, surface the version ambiguity before relying on one.
-- If the matching `manifest.json` is missing, report that the requested corpus is unavailable. Corpus preparation belongs to the deployer; the runtime Agent must not run `scripts/build_godot_docs.py` automatically.
+- 根据用户请求或可靠的项目证据确定目标版本，再通过 `--version <version>` 使用 `references/godot-docs/<version>`。
+- 版本未知且仅安装了一套语料时，使用该语料，并在回答中注明版本。
+- 安装了多套语料且版本会影响结论时，应先指出版本不明确，再决定采用哪套语料。
+- 如果缺少匹配的 `manifest.json`，报告所需语料不可用。语料准备由部署者负责；运行时 Agent 不得自动运行 `scripts/build_godot_docs.py`。
 
-## Search
+## 检索文档
 
-Use the read-only search helper to return bounded, ranked evidence.
+使用对语料只读的搜索工具获取范围受限、按相关性排序的证据。
 
 ```bash
 python3 <skill-dir>/scripts/search_godot_docs.py "Node.queue_free" --version <version> --show-best
@@ -37,16 +37,30 @@ python3 <skill-dir>/scripts/search_godot_docs.py "Creating your first script" --
 python3 <skill-dir>/scripts/search_godot_docs.py "Indented block expected" --version <version> --mode content
 ```
 
-- Use the default `auto` mode for a class, `Class.member`, a constructor or instantiation expression such as `Vector2()` or `JSON.new()`, or initial discovery. Inherited members fall back to their defining class.
-- Use `--mode title` for a known page, `--mode section` for a known heading, and `--mode content` for an exact phrase or error.
-- Use `--show-best` when the query is precise; use the default ranked list while discovering the right source. The list includes excerpts for the top three results and compact indexes for the rest.
-- When a result provides only an index, its excerpt is truncated, or the conclusion requires adjacent context, use its `path:line` to locate `references/godot-docs/<version>/<path>` and read the smallest local range that confirms the fact.
-- Form queries with the official English terminology used by the documentation. Translate non-English concepts before searching, then refine an insufficient result or a lower indexed result with the bare member name, exact wording, or terms found in the ranked results.
+- 查询类、`Class.member`、构造或实例化表达式（如 `Vector2()` 或 `JSON.new()`），或进行初步探索时，使用默认的 `auto` 模式。继承成员会回溯到定义它的类。
+- 已知页面名称时使用 `--mode title`，已知章节标题时使用 `--mode section`，查询精确短语或错误时使用 `--mode content`。
+- 查询精确时使用 `--show-best`；探索合适来源时使用默认排序列表。列表为前三项结果提供摘要，其余结果仅提供简要索引。
+- 构造调用仅按参数数量筛选，不推断参数类型。`--show-best` 提示存在多个构造重载时（JSON 中见 `warnings`），首项不代表已经消歧；应移除该选项查看候选，并按来源路径核实适用签名。
+- 如果结果仅有索引、摘要被截断，或结论需要相邻上下文，使用结果中的 `path:line` 定位 `references/godot-docs/<version>/<path>`，读取足以确认事实的最小本地范围。
+- 整页结果最多预览正文前 24 行，省略后文时也会标记 `truncated`；增大 `--max-chars` 不会扩大该行数范围，应按路径补读原文。
+- 使用文档中的官方英文术语构造查询。先将非英文概念译为英文再检索；结果不足或相关条目排名较低时，使用不带限定的成员名、精确措辞或排序结果中的词项细化查询。
 
-Use class pages for signatures, defaults, inheritance, signals, warnings, and deprecations. Use manual pages for concepts, workflows, and examples. Consult both when reliable guidance requires the API contract and its intended usage.
+使用类参考页面核实签名、默认值、继承、信号、警告和弃用信息；使用手册页面了解概念、工作流程和示例。如果可靠的指导同时依赖 API 契约及其预期用法，应查阅两类页面。
 
-## Apply the evidence
+## 应用证据
 
-- Identify the source version and match it to the target before applying the evidence.
-- Cite the reported local path and heading for non-obvious claims.
-- Distinguish documented facts from inferences and project observations, and state any uncertainty the installed corpus does not resolve.
+- 应用证据前，确认来源版本与目标版本匹配。
+- 对不显然的结论，引用结果报告的本地路径和标题。
+- 区分文档事实、推断和项目观察，并说明已安装语料仍无法消除的不确定性。
+
+## 可选反馈
+
+日志和评价默认关闭，沿用用户已有配置。仅在启用 `GODOT_DOCS_FEEDBACK_FILE` 或用户指定反馈文件后，遇到明显障碍或特别有用的发现时，可顺手记录一条：哪条查询遇到了什么、怎样解决或帮助了任务。无需每次调用都评价，也不为评价追加检索或测试。
+
+提供实际查询、文档版本和一句中文观察即可；以下仅为格式示例：
+
+```bash
+python3 <skill-dir>/scripts/record_godot_docs_feedback.py --version 4.7 --query "Node.queue_free" --reason "摘要不足以判断调用时机，补读同页上下文后解决。"
+```
+
+来源、评价等级和任务标识均可选；自定义语料需附带 `--docs-root`。不把主观评价当作验证结果，不粘贴源码或完整对话。脚本缺失或记录失败时跳过，继续原任务。需要额外参数时查看脚本 `--help`；配置说明在仓库 `README.md` 的“日志与反馈”一节，日常检索无需阅读。

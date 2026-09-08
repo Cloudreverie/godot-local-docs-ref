@@ -5,10 +5,12 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "search_godot_docs.py"
@@ -789,6 +791,52 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(self.search("Vector2(1, 2, 3)"), [])
         self.assertEqual(self.search("Vector2(1,"), [])
 
+    def test_show_best_reports_constructor_ambiguity(self) -> None:
+        for query, ambiguous in (
+            ("Vector2(Vector2i(1, 2))", True),
+            ("Vector2.Vector2", True),
+            ("Vector2(1, 2)", False),
+            ("Node.queue_free()", False),
+        ):
+            for json_output in (False, True):
+                with self.subTest(query=query, json=json_output):
+                    stdout = io.StringIO()
+                    args = [query, "--docs-root", str(self.fixture.root), "--show-best"]
+                    if json_output:
+                        args.append("--json")
+                    with contextlib.redirect_stdout(stdout):
+                        exit_code = search_godot_docs.main(args)
+                    self.assertEqual(exit_code, 0)
+                    if json_output:
+                        payload = json.loads(stdout.getvalue())
+                        self.assertEqual(len(payload["results"]), 1)
+                        self.assertEqual(bool(payload["warnings"]), ambiguous)
+                    else:
+                        self.assertEqual("构造重载" in stdout.getvalue(), ambiguous)
+
+    def test_unscoped_calls_match_only_callable_members(self) -> None:
+        for mode in ("auto", "member"):
+            for query in ("queue_free()", "queue_free( )"):
+                with self.subTest(mode=mode, query=query):
+                    results = self.search(query, mode=mode)
+                    self.assertEqual(len(results), 1)
+                    self.assertIn("void **queue_free**()", results[0].excerpt)
+            for query in ("disabled()", "Wrong.queue_free()", "nonexistent()"):
+                with self.subTest(mode=mode, query=query):
+                    self.assertEqual(self.search(query, mode=mode), [])
+
+    def test_document_preview_marks_omitted_lines_as_truncated(self) -> None:
+        document = self.corpus.documents[0]
+        for line_count, expected in ((23, False), (24, False), (25, True), (42, True)):
+            with self.subTest(line_count=line_count):
+                document.path.write_text("\n".join(["# Preview"] + ["正文"] * (line_count - 1)))
+                result = search_godot_docs.document_result(document, 1000, 6000, {})
+                self.assertEqual(result.truncated, expected)
+                self.assertEqual(len(result.excerpt.splitlines()), min(line_count, 24))
+        document.path.write_text("# Preview\n" + "正文" * 200)
+        result = search_godot_docs.document_result(document, 1000, 200, {})
+        self.assertTrue(result.truncated)
+
     def test_object_new_falls_back_to_the_exact_class_document(self) -> None:
         for query, title in (("JSON.new", "JSON"), ("Crypto.new()", "Crypto")):
             with self.subTest(query=query):
@@ -919,8 +967,8 @@ class SearchTests(unittest.TestCase):
             )
         output = stdout.getvalue()
         self.assertEqual(exit_code, 1)
-        self.assertIn("No matching API declaration", output)
-        self.assertIn("documented inheritance chain", output)
+        self.assertIn("未找到匹配的 API 声明", output)
+        self.assertIn("文档中的继承链", output)
         self.assertNotIn("--mode content", output)
 
     def test_ranked_text_compacts_results_after_top_three(self) -> None:
@@ -957,7 +1005,7 @@ class SearchTests(unittest.TestCase):
             )
         output = stdout.getvalue()
 
-        self.assertIn("Results: 5 (excerpts for top 3; remaining entries are indexed)", output)
+        self.assertIn("Results: 5 （前 3 项提供摘要，其余条目仅提供索引）", output)
         self.assertIn("excerpt-1", output)
         self.assertIn("excerpt-3", output)
         self.assertNotIn("fourth method details", output)
@@ -988,7 +1036,111 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(payload["results"][4]["excerpt"], "json-excerpt-5")
 
 
+class UsageLogTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fixture = CorpusFixture()
+        self.addCleanup(self.fixture.close)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.log_path = Path(temporary.name) / "logs" / "usage.jsonl"
+        environment = mock.patch.dict(os.environ, {"GODOT_DOCS_LOG_FILE": "", "GODOT_DOCS_TASK_ID": ""})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def invoke(self, query="Node.queue_free", options=()):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = search_godot_docs.main([
+                query, "--docs-root", str(self.fixture.root), "--json", *options,
+            ])
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def read_records(self):
+        return [json.loads(line) for line in self.log_path.read_text().splitlines()]
+
+    def test_disabled_by_default_and_no_log_overrides_environment(self) -> None:
+        with mock.patch.object(search_godot_docs, "append_usage_log") as append:
+            self.assertEqual(self.invoke()[0], 0)
+            with mock.patch.dict(os.environ, {"GODOT_DOCS_LOG_FILE": str(self.log_path)}):
+                self.assertEqual(self.invoke(options=["--no-log"])[0], 0)
+            append.assert_not_called()
+        self.assertFalse(self.log_path.parent.exists())
+
+    def test_environment_appends_metadata_without_changing_output(self) -> None:
+        expected = self.invoke()
+        with mock.patch.dict(os.environ, {
+            "GODOT_DOCS_LOG_FILE": str(self.log_path), "GODOT_DOCS_TASK_ID": "task-1",
+        }):
+            self.assertEqual(self.invoke(), expected)
+            self.assertEqual(self.invoke(), expected)
+        records = self.read_records()
+        self.assertEqual(len(records), 2)
+        record = records[0]
+        self.assertEqual(record["status"], "ok")
+        self.assertEqual(record["task_id"], "task-1")
+        self.assertEqual(record["godot_version"], "4.7")
+        self.assertEqual(record["source_commit"], "fixture-commit")
+        self.assertEqual(record["result_count"], 1)
+        self.assertEqual(record["results"][0]["kind"], "method")
+        self.assertNotIn("excerpt", record["results"][0])
+        self.assertGreaterEqual(record["duration_ms"], 0)
+
+    def test_cli_path_overrides_environment(self) -> None:
+        other = self.log_path.parent / "other.jsonl"
+        with mock.patch.dict(os.environ, {"GODOT_DOCS_LOG_FILE": str(other)}):
+            self.assertEqual(self.invoke(options=["--log-file", str(self.log_path)])[0], 0)
+        self.assertTrue(self.log_path.exists())
+        self.assertFalse(other.exists())
+
+    def test_no_matches_errors_and_ambiguity_are_recorded(self) -> None:
+        with mock.patch.dict(os.environ, {"GODOT_DOCS_LOG_FILE": str(self.log_path)}):
+            self.assertEqual(self.invoke("Wrong.member")[0], 1)
+            self.assertEqual(self.invoke(options=["--limit", "0"])[0], 2)
+            self.assertEqual(self.invoke(options=["--docs-root", str(self.log_path.parent / "missing")])[0], 2)
+            self.assertEqual(self.invoke("Vector2(1)", ["--show-best"])[0], 0)
+        records = self.read_records()
+        self.assertEqual([r["status"] for r in records], ["no_matches", "error", "error", "ok"])
+        self.assertEqual(records[0]["result_count"], 0)
+        self.assertIn("--limit", records[1]["error"])
+        self.assertIn("manifest.json", records[2]["error"])
+        self.assertTrue(records[3]["warnings"])
+
+    def test_unwritable_log_does_not_change_search_or_json(self) -> None:
+        self.log_path.mkdir(parents=True)
+        expected_code, expected_output, _ = self.invoke()
+        code, output, error = self.invoke(options=["--log-file", str(self.log_path)])
+        self.assertEqual((code, output), (expected_code, expected_output))
+        self.assertIn("日志写入失败", error)
+
+    def test_log_cannot_modify_corpus_or_references(self) -> None:
+        targets = [self.fixture.root / "usage.jsonl", self.log_path.parent / "references" / "usage.jsonl"]
+        for target in targets:
+            with self.subTest(target=target):
+                code, output, error = self.invoke(options=["--log-file", str(target)])
+                self.assertEqual(code, 0)
+                self.assertTrue(json.loads(output)["results"])
+                self.assertIn("日志写入失败", error)
+                self.assertFalse(target.exists())
+        alias = self.log_path.parent.parent / "corpus-link"
+        alias.symlink_to(self.fixture.root, target_is_directory=True)
+        self.assertIn("日志写入失败", self.invoke(options=["--log-file", str(alias / "usage.jsonl")])[2])
+        self.assertFalse((self.fixture.root / "usage.jsonl").exists())
+
+
 class FailureTests(unittest.TestCase):
+    def test_non_object_manifest_reports_corpus_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for value in ([], None, "manifest", 1, True):
+                with self.subTest(value=value):
+                    (root / "manifest.json").write_text(json.dumps(value), encoding="utf-8")
+                    stderr = io.StringIO()
+                    with contextlib.redirect_stderr(stderr):
+                        exit_code = search_godot_docs.main(["Node", "--docs-root", str(root)])
+                    self.assertEqual(exit_code, 2)
+                    self.assertIn("manifest", stderr.getvalue())
+                    self.assertNotIn("Traceback", stderr.getvalue())
+
     def test_dot_version_is_a_safe_directory_component(self) -> None:
         self.assertEqual(search_godot_docs.validate_version("4.7"), "4.7")
 
@@ -1012,7 +1164,7 @@ class FailureTests(unittest.TestCase):
                 ],
             }
             (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            with self.assertRaisesRegex(search_godot_docs.CorpusError, "unsafe"):
+            with self.assertRaisesRegex(search_godot_docs.CorpusError, "不安全"):
                 search_godot_docs.load_corpus(root)
 
     def test_missing_corpus_reports_deployer_action_without_building(self) -> None:
@@ -1023,7 +1175,7 @@ class FailureTests(unittest.TestCase):
                     ["Node", "--docs-root", str(Path(temporary) / "missing")]
                 )
             self.assertEqual(exit_code, 2)
-            self.assertIn("deployer must run scripts/build_godot_docs.py", stderr.getvalue())
+            self.assertIn("部署者需要运行 scripts/build_godot_docs.py", stderr.getvalue())
 
 
 if __name__ == "__main__":
