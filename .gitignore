@@ -40,3 +40,6 @@ feedback.jsonl
 
 # 自动生成的 Godot 文档语料
 references/godot-docs/
+
+# Skill 本地记录开关
+/config.local.json

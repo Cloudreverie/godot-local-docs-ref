@@ -32,18 +32,22 @@ python3 -B scripts/search_godot_docs.py "input actions" --version 4.7
 
 ## 日志与反馈
 
-两项功能默认关闭，按需启用，并让检索子进程继承环境变量：
+在实际调用的 Skill 根目录创建 `config.local.json`（可复制 `config.example.json`），无需配置终端环境变量：
 
-```bash
-# Agent 简短评价：记录遇到的问题或有用发现
-export GODOT_DOCS_FEEDBACK_FILE="$HOME/.local/state/godot-local-docs-ref/feedback.jsonl"
-# 自动检索日志：用于复现查询或分析耗时
-export GODOT_DOCS_LOG_FILE="$HOME/.local/state/godot-local-docs-ref/usage.jsonl"
+```json
+{
+  "LOG_FILE": "usage.jsonl",
+  "FEEDBACK_FILE": "feedback.jsonl"
+}
 ```
 
-取消对应环境变量即可关闭，也可用 `--no-log` 关闭单次记录。日志文件需为语料目录及 `references/` 之外的 `.jsonl` 文件；记录仅本地保存，不自动上传，写入失败不会阻断检索。
+路径表示启用，`null` 或空字符串表示关闭对应功能。相对路径以 Skill 目录为准，与 Agent 工作目录无关，也支持绝对路径和 `~`。上面的配置将两种记录保存在 Skill 根目录；配置文件和这两个日志文件已被 Git 忽略。首次实际记录时才创建日志文件，反馈仍由 Agent 按需提交，启用不会自动产生评价。
 
-查询和错误可能包含项目名称或本地路径，分享日志前应检查内容。运行测试时宜取消日志环境变量，避免混入测试记录。评价时机与调用示例见 [可选反馈](SKILL.md#可选反馈)；参数见脚本 `--help`，记录字段见下方对应实现。
+命令行 `--log-file` / `--no-log` 可覆盖本地配置。没有配置文件或对应键时默认关闭；不再读取 `GODOT_DOCS_LOG_FILE` / `GODOT_DOCS_FEEDBACK_FILE`，已有环境变量无需清理也不会启用记录。配置损坏时提示并跳过记录，不影响检索。
+
+配置不会随 Git 同步。若 Skill 安装在另一目录，请在实际安装目录创建配置；更新部署时保留它。日志需为语料目录及 `references/` 之外的 `.jsonl` 文件，仅本地保存，写入失败不会阻断检索。
+
+评价时机与调用示例见 [可选反馈](SKILL.md#可选反馈)；其他参数见脚本 `--help`。查询和错误可能包含本地路径，分享前检查内容。
 
 ## 维护
 

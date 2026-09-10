@@ -10,10 +10,10 @@ from pathlib import Path
 import sys
 from typing import Optional, Sequence
 
-from search_godot_docs import append_usage_log, default_docs_root, validate_version
+from search_godot_docs import append_usage_log, default_docs_root, resolve_log_path, validate_version
 
 
-SCRIPT_VERSION = "1.1.0"
+SCRIPT_VERSION = "1.2.0"
 
 
 def short_text(value: str) -> str:
@@ -50,13 +50,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         help="与检索日志相同的任务标识，默认读取 GODOT_DOCS_TASK_ID")
     logging = parser.add_mutually_exclusive_group()
     logging.add_argument("--log-file", type=Path,
-                         help="反馈 JSONL 路径，默认读取 GODOT_DOCS_FEEDBACK_FILE，未配置则不写入")
-    logging.add_argument("--no-log", action="store_true", help="禁用本次记录，覆盖环境配置")
+                         help="反馈 JSONL 路径，默认读取 config.local.json 的 FEEDBACK_FILE，未配置则关闭")
+    logging.add_argument("--no-log", action="store_true", help="禁用本次记录，覆盖本地配置")
     args = parser.parse_args(argv)
     if len(args.query) > 10 or len(args.source) > 10:
         parser.error("query 和 source 均最多允许 10 项")
-    configured_path = args.log_file or os.environ.get("GODOT_DOCS_FEEDBACK_FILE")
-    if args.no_log or not configured_path:
+    configured_path = resolve_log_path(args, "FEEDBACK_FILE")
+    if configured_path is None:
         print("反馈记录未启用，已跳过。", file=sys.stderr)
         return 0
 

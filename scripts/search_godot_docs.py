@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-SCRIPT_VERSION = "1.5.0"
+SCRIPT_VERSION = "1.6.0"
 DEFAULT_VERSION = "4.7"
 RANKED_EXCERPT_LIMIT = 3
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -212,9 +212,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     logging = parser.add_mutually_exclusive_group()
     logging.add_argument(
         "--log-file", type=Path,
-        help="追加 JSONL 使用日志；也可通过 GODOT_DOCS_LOG_FILE 配置，默认关闭",
+        help="追加 JSONL 使用日志；默认读取 config.local.json 的 LOG_FILE，未配置则关闭",
     )
-    logging.add_argument("--no-log", action="store_true", help="本次关闭日志，覆盖环境变量配置")
+    logging.add_argument("--no-log", action="store_true", help="本次关闭日志，覆盖本地配置")
     return parser.parse_args(argv)
 
 
@@ -1448,6 +1448,34 @@ def run_search(args: argparse.Namespace, record: Dict[str, Any]) -> int:
     return 0 if results else 1
 
 
+def resolve_log_path(args: argparse.Namespace, key: str) -> Optional[Path]:
+    """命令行优先，其次为 Skill 本地配置，缺少该键或配置文件时关闭。"""
+    if args.no_log:
+        return None
+    if args.log_file is not None:
+        return args.log_file
+    config_path = SKILL_DIR / "config.local.json"
+    try:
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            config = {}
+        if not isinstance(config, dict):
+            raise ValueError("配置必须是 JSON 对象")
+        if key in config:
+            value = config[key]
+            if value is None or value == "":
+                return None
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{key} 必须是文件路径字符串或 null")
+            path = Path(value).expanduser()
+            return path if path.is_absolute() else SKILL_DIR / path
+    except (OSError, ValueError, RuntimeError) as error:
+        print(f"本地配置读取失败，本次记录已关闭：{error}", file=sys.stderr)
+        return None
+    return None
+
+
 def append_usage_log(path: Path, docs_root: Path, record: Dict[str, Any]) -> None:
     """日志失败仅报告到 stderr，不改变检索结果；禁止写入语料和 references。"""
     try:
@@ -1475,8 +1503,7 @@ def append_usage_log(path: Path, docs_root: Path, record: Dict[str, Any]) -> Non
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
-    configured_path = args.log_file or os.environ.get("GODOT_DOCS_LOG_FILE")
-    log_path = Path(configured_path) if configured_path and not args.no_log else None
+    log_path = resolve_log_path(args, "LOG_FILE")
     started = time.perf_counter()
     record: Dict[str, Any] = {}
     exit_code = run_search(args, record)

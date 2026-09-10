@@ -652,6 +652,9 @@ class CorpusFixture:
 
 class SearchTests(unittest.TestCase):
     def setUp(self) -> None:
+        logging = mock.patch.object(search_godot_docs, "resolve_log_path", return_value=None)
+        logging.start()
+        self.addCleanup(logging.stop)
         self.fixture = CorpusFixture()
         self.corpus = search_godot_docs.load_corpus(self.fixture.root)
 
@@ -1043,6 +1046,9 @@ class UsageLogTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.log_path = Path(temporary.name) / "logs" / "usage.jsonl"
+        location = mock.patch.object(search_godot_docs, "SKILL_DIR", Path(temporary.name))
+        location.start()
+        self.addCleanup(location.stop)
         environment = mock.patch.dict(os.environ, {"GODOT_DOCS_LOG_FILE": "", "GODOT_DOCS_TASK_ID": ""})
         environment.start()
         self.addCleanup(environment.stop)
@@ -1055,19 +1061,45 @@ class UsageLogTests(unittest.TestCase):
             ])
         return code, stdout.getvalue(), stderr.getvalue()
 
+    def test_local_config_relative_path_and_disabled_override(self):
+        config = search_godot_docs.SKILL_DIR / "config.local.json"
+        config.write_text(json.dumps({"LOG_FILE": "logs/usage.jsonl"}))
+        with mock.patch.dict(os.environ, {"GODOT_DOCS_LOG_FILE": str(self.log_path.parent / "old.jsonl")}):
+            self.assertEqual(self.invoke()[0], 0)
+            self.assertEqual(len(self.read_records()), 1)
+            config.write_text('{"LOG_FILE": null}')
+            self.assertEqual(self.invoke()[0], 0)
+            self.assertFalse((self.log_path.parent / "old.jsonl").exists())
+            self.assertEqual(len(self.read_records()), 1)
+            self.assertEqual(self.invoke(options=["--log-file", str(self.log_path)])[0], 0)
+            self.assertEqual(len(self.read_records()), 2)
+
+    def test_invalid_local_config_is_nonblocking(self):
+        config = search_godot_docs.SKILL_DIR / "config.local.json"
+        for content in ('{', '[]', '{"LOG_FILE": true}'):
+            config.write_text(content)
+            code, output, error = self.invoke()
+            self.assertEqual(code, 0)
+            self.assertTrue(json.loads(output))
+            self.assertIn("本地配置读取失败", error)
+            self.assertFalse(self.log_path.exists())
+
     def read_records(self):
         return [json.loads(line) for line in self.log_path.read_text().splitlines()]
 
-    def test_disabled_by_default_and_no_log_overrides_environment(self) -> None:
+    def test_missing_config_or_key_ignores_environment(self) -> None:
         with mock.patch.object(search_godot_docs, "append_usage_log") as append:
             self.assertEqual(self.invoke()[0], 0)
             with mock.patch.dict(os.environ, {"GODOT_DOCS_LOG_FILE": str(self.log_path)}):
-                self.assertEqual(self.invoke(options=["--no-log"])[0], 0)
+                self.assertEqual(self.invoke()[0], 0)
+                (search_godot_docs.SKILL_DIR / "config.local.json").write_text("{}")
+                self.assertEqual(self.invoke()[0], 0)
             append.assert_not_called()
         self.assertFalse(self.log_path.parent.exists())
 
-    def test_environment_appends_metadata_without_changing_output(self) -> None:
+    def test_config_appends_metadata_without_changing_output(self) -> None:
         expected = self.invoke()
+        (search_godot_docs.SKILL_DIR / "config.local.json").write_text(json.dumps({"LOG_FILE": str(self.log_path)}))
         with mock.patch.dict(os.environ, {
             "GODOT_DOCS_LOG_FILE": str(self.log_path), "GODOT_DOCS_TASK_ID": "task-1",
         }):
@@ -1093,6 +1125,7 @@ class UsageLogTests(unittest.TestCase):
         self.assertFalse(other.exists())
 
     def test_no_matches_errors_and_ambiguity_are_recorded(self) -> None:
+        (search_godot_docs.SKILL_DIR / "config.local.json").write_text(json.dumps({"LOG_FILE": str(self.log_path)}))
         with mock.patch.dict(os.environ, {"GODOT_DOCS_LOG_FILE": str(self.log_path)}):
             self.assertEqual(self.invoke("Wrong.member")[0], 1)
             self.assertEqual(self.invoke(options=["--limit", "0"])[0], 2)
@@ -1136,7 +1169,7 @@ class FailureTests(unittest.TestCase):
                     (root / "manifest.json").write_text(json.dumps(value), encoding="utf-8")
                     stderr = io.StringIO()
                     with contextlib.redirect_stderr(stderr):
-                        exit_code = search_godot_docs.main(["Node", "--docs-root", str(root)])
+                        exit_code = search_godot_docs.main(["Node", "--docs-root", str(root), "--no-log"])
                     self.assertEqual(exit_code, 2)
                     self.assertIn("manifest", stderr.getvalue())
                     self.assertNotIn("Traceback", stderr.getvalue())
