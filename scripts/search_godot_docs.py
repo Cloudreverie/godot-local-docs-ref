@@ -14,7 +14,7 @@ import os
 import re
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from functools import lru_cache
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-SCRIPT_VERSION = "1.6.0"
+SCRIPT_VERSION = "1.7.0"
 DEFAULT_VERSION = "4.7"
 RANKED_EXCERPT_LIMIT = 3
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -111,6 +111,7 @@ class Corpus:
     commit: str
     schema_version: int
     documents: Tuple[Document, ...]
+    coverage: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,31 @@ class ParsedQuery:
 
 
 @dataclass(frozen=True)
+class DocumentDefault:
+    value: str
+    document: Document
+    line: int
+    excerpt: str
+    truncated: bool = False
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "value": self.value,
+            "title": self.document.title,
+            "path": self.document.relative_path,
+            "line": self.line,
+            "excerpt": self.excerpt,
+            "truncated": self.truncated,
+        }
+
+
+@dataclass
+class SearchDiagnostics:
+    missing_ancestors: List[str] = field(default_factory=list)
+    ambiguous: bool = False
+
+
+@dataclass(frozen=True)
 class SearchResult:
     document: Document
     kind: str
@@ -152,9 +178,11 @@ class SearchResult:
     heading: Optional[str]
     excerpt: str
     truncated: bool = False
+    target_class: Optional[str] = None
+    document_default: Optional[DocumentDefault] = None
 
     def as_dict(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "kind": self.kind,
             "title": self.document.title,
             "path": self.document.relative_path,
@@ -164,6 +192,11 @@ class SearchResult:
             "excerpt": self.excerpt,
             "truncated": self.truncated,
         }
+        if self.kind in STRUCTURED_RESULT_KINDS:
+            payload.update(target_class=self.target_class, declaring_class=self.document.title)
+        if self.kind == "property":
+            payload["document_default"] = self.document_default.as_dict() if self.document_default else None
+        return payload
 
 
 def validate_version(value: str) -> str:
@@ -185,7 +218,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default="auto",
         help="检索策略（默认：auto）",
     )
-    parser.add_argument("--version", type=validate_version, default=DEFAULT_VERSION)
+    parser.add_argument(
+        "--version", type=validate_version,
+        help=f"要求 manifest 版本严格匹配；未指定语料目录和版本时使用 {DEFAULT_VERSION}",
+    )
     parser.add_argument(
         "--docs-root",
         type=Path,
@@ -418,6 +454,17 @@ def load_corpus(root: Path) -> Corpus:
     if not isinstance(version, str) or not isinstance(commit, str):
         raise CorpusError(f"manifest 缺少 Godot 版本或来源 commit：{manifest_path}")
 
+    coverage = "unknown"
+    build_metadata = manifest.get("build")
+    if isinstance(build_metadata, dict) and "selected_sources" in build_metadata:
+        selected = build_metadata["selected_sources"]
+        if selected is None:
+            coverage = "full"
+        elif isinstance(selected, list) and selected and all(isinstance(item, str) and item for item in selected):
+            coverage = "partial"
+        else:
+            raise CorpusError(f"manifest 的 build.selected_sources 无效：{manifest_path}")
+
     documents: List[Document] = []
     seen: set[str] = set()
     for entry in file_entries:
@@ -437,7 +484,7 @@ def load_corpus(root: Path) -> Corpus:
         documents.append(Document(root, relative, title, source_path, license_id))
     if not documents:
         raise CorpusError(f"生成文档的 manifest 不包含任何页面：{manifest_path}")
-    return Corpus(root, version, commit, schema, tuple(documents))
+    return Corpus(root, version, commit, schema, tuple(documents), coverage)
 
 
 def default_docs_root(version: str) -> Path:
@@ -922,13 +969,97 @@ def implicit_new_document_result(
     return document_result(document, 2500, max_chars, cache)
 
 
+def table_cells(line: str) -> List[str]:
+    """拆分生成的 Markdown 表格行，保留转义竖线和代码中的竖线。"""
+    if not line.strip().startswith("|"):
+        return []
+    cells: List[str] = []
+    current: List[str] = []
+    code_fence = ""
+    for token in re.findall(r"\\.|`+|\||[^\\`|]+|\\", line.strip()):
+        if token.startswith("`"):
+            if not code_fence:
+                code_fence = token
+            elif token == code_fence:
+                code_fence = ""
+        if token == "|" and not code_fence:
+            cells.append("".join(current).strip())
+            current = []
+        else:
+            current.append(token)
+    cells.append("".join(current).strip())
+    return cells[1:-1] if not cells[-1] else cells[1:]
+
+
+def property_default(
+    document: Document,
+    block: MemberBlock,
+    lineage: Sequence[Tuple[str, Optional[Document]]],
+    max_chars: int,
+    cache: Dict[str, List[str]],
+) -> Optional[DocumentDefault]:
+    """按目标类到定义类的顺序取文档默认值；继承链有缺口时不猜测。"""
+    name = canonical_member_name(block.declared_names[0])
+    for _, candidate in lineage:
+        if candidate is None:
+            return None
+        lines = read_lines(candidate, cache)
+        sections = parse_sections(lines)
+        fenced = fenced_lines(lines)
+        value = None
+        source_line = 0
+        for section in sections:
+            if section.level != 2 or normalize(section.title) != "properties":
+                continue
+            for index in range(section.start + 1, section.end):
+                if fenced[index]:
+                    continue
+                cells = table_cells(lines[index])
+                if len(cells) != 3 or canonical_member_name(cells[1].replace("**", "")) != name:
+                    continue
+                match = re.fullmatch(r"(.+?)\s+\(overrides\s+.+\)", cells[2])
+                if match:
+                    value = match.group(1).replace(r"\|", "|")
+                    source_line = index
+                    break
+            if value is not None:
+                break
+        if value is None:
+            blocks = [block] if candidate == document else class_member_blocks(lines, sections)
+            for declaration in blocks:
+                if declaration.kind != "property" or canonical_member_name(declaration.declared_names[0]) != name:
+                    continue
+                match = ASSIGNMENT_DECLARATION_RE.match(lines[declaration.start])
+                if not match:
+                    return None
+                value = lines[declaration.start][match.end():].strip()
+                source_line = declaration.start
+                break
+        if value:
+            inline_code = re.fullmatch(r"(`+)(.*?)\1", value)
+            if inline_code:
+                value = inline_code.group(2)
+            value, value_truncated = truncate_text(value, max_chars)
+            excerpt, truncated = truncate_text(lines[source_line], max_chars)
+            return DocumentDefault(value, candidate, source_line + 1, excerpt, truncated or value_truncated)
+        if candidate == document:
+            break
+    return None
+
+
 def member_results(
-    corpus: Corpus, parsed: ParsedQuery, max_chars: int, cache: Dict[str, List[str]]
+    corpus: Corpus, parsed: ParsedQuery, max_chars: int, cache: Dict[str, List[str]],
+    diagnostics: Optional[SearchDiagnostics] = None,
 ) -> List[SearchResult]:
     target = parsed.member or parsed.raw
     if parsed.class_document:
         documents: Iterable[Document] = class_lineage(
             corpus, parsed.class_document, cache
+        )
+        by_title = {canonical_member_name(document.title): document for document in documents}
+        lineage = tuple(
+            (name, by_title.get(canonical_member_name(name)))
+            for name in (parsed.class_document.title, *inheritance_names(read_lines(parsed.class_document, cache)))
         )
     else:
         documents = (document for document in corpus.documents if document.is_class_reference)
@@ -963,6 +1094,13 @@ def member_results(
             ):
                 score += 100
             excerpt, truncated = truncate_text(block_text, max_chars)
+            default = None
+            if block.kind == "property":
+                default = property_default(
+                    document, block,
+                    lineage if parsed.class_document else ((document.title, document),),
+                    max_chars, cache,
+                )
             results.append(
                 SearchResult(
                     document,
@@ -972,10 +1110,20 @@ def member_results(
                     block.heading,
                     excerpt,
                     truncated,
+                    parsed.class_document.title if parsed.class_document else None,
+                    default,
                 )
             )
     if parsed.class_document:
         api_results = [result for result in results if result.kind != "theme-property"]
+        if diagnostics is not None:
+            # 定义类之后的缺页不影响当前成员；定义类之前的缺口可能隐藏覆盖。
+            definitions = {result.document for result in api_results}
+            for name, ancestor in lineage:
+                if ancestor in definitions:
+                    break
+                if ancestor is None and name not in diagnostics.missing_ancestors:
+                    diagnostics.missing_ancestors.append(name)
         if api_results:
             return api_results
     return results
@@ -1221,14 +1369,28 @@ def search_corpus(
     limit: int,
     context: int,
     max_chars: int,
+    diagnostics: Optional[SearchDiagnostics] = None,
 ) -> List[SearchResult]:
     cache: Dict[str, List[str]] = {}
+
+    def ranked_members() -> List[SearchResult]:
+        candidates = member_results(corpus, parsed, max_chars, cache, diagnostics)
+        ordered = sort_and_deduplicate(candidates, len(candidates))
+        if diagnostics is not None and ordered:
+            # 类名已限定时，较远祖先的同名声明不构成重载歧义。
+            applicable = [
+                result for result in ordered
+                if not parsed.class_document or result.document == ordered[0].document
+            ]
+            diagnostics.ambiguous = len(applicable) > 1
+        return ordered[:limit]
+
     if parsed.invalid_explicit_call and mode in {"auto", "member"}:
         return []
     if mode == "title":
         return sort_and_deduplicate(title_results(corpus, parsed, max_chars, cache), limit)
     if mode == "member":
-        return sort_and_deduplicate(member_results(corpus, parsed, max_chars, cache), limit)
+        return ranked_members()
     if mode == "section":
         if parsed.class_document and parsed.member:
             section_target = class_section_alias(parsed.member) or parsed.member
@@ -1265,9 +1427,9 @@ def search_corpus(
             )
             if candidates:
                 return sort_and_deduplicate(candidates, limit)
-        candidates = member_results(corpus, parsed, max_chars, cache)
+        candidates = ranked_members()
         if candidates:
-            return sort_and_deduplicate(candidates, limit)
+            return candidates
         new_document = implicit_new_document_result(parsed, max_chars, cache)
         return [new_document] if new_document else []
 
@@ -1276,9 +1438,9 @@ def search_corpus(
         return sort_and_deduplicate(title_results(corpus, parsed, max_chars, cache), limit)
 
     if parsed.member or identifier_like(parsed.raw):
-        candidates = member_results(corpus, parsed, max_chars, cache)
+        candidates = ranked_members()
         if candidates:
-            return sort_and_deduplicate(candidates, limit)
+            return candidates
         if parsed.member or "." in re.sub(r"::", ".", parsed.raw.strip()):
             return []
 
@@ -1295,6 +1457,20 @@ def search_corpus(
         )
     )
     return sort_and_deduplicate(candidates, limit, one_per_document=True)
+
+
+def render_member_context(result: SearchResult, indent: str = "") -> None:
+    if result.target_class and result.target_class != result.document.title:
+        print(f"{indent}目标类：{result.target_class}；定义类：{result.document.title}")
+    if result.document_default:
+        default = result.document_default
+        target = result.target_class or result.document.title
+        print(f"{indent}文档默认值（适用于 {target}）：{default.value}")
+        print(f"{indent}默认值来源：{default.document.title} {default.document.relative_path}:{default.line}")
+        if default.truncated:
+            print(f"{indent}[默认值证据已截断；请按来源位置读取原文]")
+    elif result.kind == "property" and result.target_class and result.target_class != result.document.title:
+        print(f"{indent}目标类的文档默认值尚未确认；不可直接套用定义类的默认值。")
 
 
 def render_text(
@@ -1327,6 +1503,7 @@ def render_text(
         heading = f" — {result.heading}" if result.heading else ""
         print(f"Result: [{result.kind}] {result.document.title}{heading}")
         print(f"Path: {result.document.relative_path}:{result.line}")
+        render_member_context(result)
         print("---")
         print(result.excerpt)
         if result.truncated:
@@ -1344,6 +1521,7 @@ def render_text(
         heading = f" — {result.heading}" if result.heading else ""
         print(f"{number}. [{result.kind}] {result.document.title}{heading}")
         print(f"   {result.document.relative_path}:{result.line}  score={result.score}")
+        render_member_context(result, "   ")
         if number > RANKED_EXCERPT_LIMIT:
             if result.kind in STRUCTURED_RESULT_KINDS:
                 declaration = next(
@@ -1369,10 +1547,17 @@ def render_json(
     mode: str,
     results: Sequence[SearchResult],
     warnings: Sequence[str] = (),
+    requested_version: Optional[str] = None,
+    diagnostics: Optional[SearchDiagnostics] = None,
 ) -> None:
+    diagnostics = diagnostics or SearchDiagnostics()
     payload = {
         "script_version": SCRIPT_VERSION,
         "godot_version": corpus.version,
+        "requested_version": requested_version,
+        "corpus_coverage": corpus.coverage,
+        "missing_ancestors": diagnostics.missing_ancestors,
+        "ambiguous": diagnostics.ambiguous,
         "source_commit": corpus.commit,
         "docs_root": str(corpus.root),
         "query": parsed.raw,
@@ -1399,13 +1584,19 @@ def run_search(args: argparse.Namespace, record: Dict[str, Any]) -> int:
     if not 200 <= max_chars <= 50000:
         return fail("--max-chars 必须介于 200 和 50000 之间")
 
-    root = args.docs_root if args.docs_root else default_docs_root(args.version)
+    root = args.docs_root if args.docs_root else default_docs_root(args.version or DEFAULT_VERSION)
+    expected_version = args.version if args.docs_root else (args.version or DEFAULT_VERSION)
+    diagnostics = SearchDiagnostics()
     try:
         corpus = load_corpus(root)
         record.update(godot_version=corpus.version, source_commit=corpus.commit)
+        if expected_version is not None and corpus.version != expected_version:
+            return fail(
+                f"文档版本不匹配：要求 {expected_version}，manifest 为 {corpus.version}。"
+                "请使用匹配的语料；--docs-root 不会覆盖版本要求。"
+            )
         parsed = parse_query(args.query, corpus)
-        # 多取一项以识别构造重载歧义，最终仍只展示一项。
-        result_limit = 2 if args.show_best else args.limit
+        result_limit = 1 if args.show_best else args.limit
         results = search_corpus(
             corpus,
             parsed,
@@ -1413,25 +1604,31 @@ def run_search(args: argparse.Namespace, record: Dict[str, Any]) -> int:
             result_limit,
             args.context,
             max_chars,
+            diagnostics,
         )
     except CorpusError as error:
         return fail(str(error))
 
     warnings: List[str] = []
-    if args.show_best:
-        if (
-            len(results) > 1
-            and results[0].kind == results[1].kind == "constructor"
-            and results[0].document == results[1].document
-        ):
-            warnings.append(
-                "存在多个匹配的构造重载；当前结果仅为排序首项，尚未按参数类型消歧。"
-                "请移除 --show-best 查看候选，并按来源路径核实适用签名。"
-            )
-        results = results[:1]
+    if corpus.coverage == "partial":
+        warnings.append("当前语料仅包含构建时选择的部分页面；无结果不能据此证明 API 不存在。")
+    if diagnostics.missing_ancestors:
+        warnings.append(
+            f"继承检索缺少祖先页面：{', '.join(diagnostics.missing_ancestors)}；"
+            "当前继承证据不完整，不能据此排除成员存在，或直接套用未核实的祖先默认值。"
+        )
+    if diagnostics.ambiguous:
+        candidate_kind = {"constructor": "构造重载", "operator": "运算符重载"}.get(results[0].kind, "成员声明")
+        warnings.append(
+            f"存在多个匹配的{candidate_kind}，尚未消歧；排序首项不代表唯一适用的声明。"
+            "请查看候选并核实类名与签名（使用了 --show-best 时移除它，必要时增大 --limit）。"
+        )
 
     record.update(
         warnings=warnings,
+        corpus_coverage=corpus.coverage,
+        missing_ancestors=diagnostics.missing_ancestors,
+        ambiguous=diagnostics.ambiguous,
         results=[{
             "path": result.document.relative_path,
             "line": result.line,
@@ -1442,7 +1639,7 @@ def run_search(args: argparse.Namespace, record: Dict[str, Any]) -> int:
         result_count=len(results),
     )
     if args.json:
-        render_json(corpus, parsed, args.mode, results, warnings)
+        render_json(corpus, parsed, args.mode, results, warnings, args.version, diagnostics)
     else:
         render_text(corpus, parsed, args.mode, results, args.show_best, warnings)
     return 0 if results else 1
@@ -1528,7 +1725,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         task_id = os.environ.get("GODOT_DOCS_TASK_ID")
         if task_id:
             record["task_id"] = task_id[:200]
-        root = args.docs_root if args.docs_root else default_docs_root(args.version)
+        root = args.docs_root if args.docs_root else default_docs_root(args.version or DEFAULT_VERSION)
         append_usage_log(log_path, root, record)
     return exit_code
 

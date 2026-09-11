@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-SCRIPT_VERSION = "0.2.0"
+SCRIPT_VERSION = "0.4.0"
 MANIFEST_SCHEMA_VERSION = 2
 REPOSITORY = "godotengine/godot-docs"
 REPOSITORY_URL = f"https://github.com/{REPOSITORY}"
@@ -353,17 +353,21 @@ def validate_source_tree(source_dir: Path) -> None:
             raise BuildError(f"上游源码树缺少 {required}：{source_dir}")
 
 
-def reuse_build_assets(reuse_root: Path, commit: str) -> Tuple[Path, Path, Path, str, Dict[str, str]]:
+def reuse_build_assets(
+    reuse_root: Path, commit: str, source_destination: Path,
+) -> Tuple[Path, Path, Path, str, Dict[str, str]]:
     archive = reuse_root / "godot-docs.zip"
-    source_dir = reuse_root / "source" / f"godot-docs-{commit}"
     python = venv_python(reuse_root / "venv")
     if not archive.is_file():
         raise BuildError(f"找不到缓存的源码归档：{archive}")
     validate_source_archive_commit(archive, commit)
-    validate_source_tree(source_dir)
     if not python.is_file():
         raise BuildError(f"找不到缓存的构建用 Python：{python}")
     packages = installed_versions(python)
+    if source_destination.exists() or source_destination.is_symlink():
+        raise BuildError(f"复用构建需要全新的源码解压目录：{source_destination}")
+    source_dir = extract_zip_safely(archive, source_destination)
+    validate_source_tree(source_dir)
     return archive, source_dir, python, sha256_file(archive), packages
 
 
@@ -490,7 +494,26 @@ def validate_corpus(output_dir: Path, files: Sequence[Dict[str, Any]]) -> None:
             raise BuildError(f"manifest 中的哈希值不匹配：{relative}")
 
 
-def publish_atomically(prepared_dir: Path, output_dir: Path, force: bool) -> None:
+def validate_partial_destination(output_dir: Path) -> None:
+    """已有非空目录只有明确标记为部分语料时才允许被部分构建替换。"""
+    if not output_dir.exists():
+        return
+    try:
+        if output_dir.is_dir() and next(output_dir.iterdir(), None) is None:
+            return
+        manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise BuildError(f"无法确认输出目录为部分语料：{output_dir}；请改用独立空目录") from error
+    build_info = manifest.get("build") if isinstance(manifest, dict) else None
+    selected = build_info.get("selected_sources") if isinstance(build_info, dict) else None
+    if not (
+        isinstance(selected, list) and selected
+        and all(isinstance(path, str) and path.strip() for path in selected)
+    ):
+        raise BuildError(f"输出目录未明确标记为部分语料：{output_dir}；--only 不能替换完整或来源不明的目录")
+
+
+def publish_atomically(prepared_dir: Path, output_dir: Path, force: bool, *, partial: bool = False) -> None:
     output_dir = output_dir.resolve()
     parent = output_dir.parent
     parent.mkdir(parents=True, exist_ok=True)
@@ -501,7 +524,12 @@ def publish_atomically(prepared_dir: Path, output_dir: Path, force: bool) -> Non
     backup = parent / f".{output_dir.name}.backup-{uuid.uuid4().hex}"
     try:
         shutil.copytree(prepared_dir, staging)
+        # 构建和复制可能耗时较长，替换前重新核对目标，避免覆盖期间生成的完整语料。
+        if partial:
+            validate_partial_destination(output_dir)
         if output_dir.exists():
+            if not force:
+                raise BuildError(f"输出已存在：{output_dir}；使用 --force 替换")
             output_dir.rename(backup)
         staging.rename(output_dir)
     except BaseException:
@@ -518,7 +546,14 @@ def publish_atomically(prepared_dir: Path, output_dir: Path, force: bool) -> Non
 def build(args: argparse.Namespace) -> Path:
     version = args.version
     source_ref = args.ref or version
+    if args.only and args.output is None:
+        raise BuildError("--only 必须通过 --output 指定独立的部分语料目录")
     output_dir = (args.output or default_output(version)).expanduser().resolve()
+    if args.only:
+        deployed_dir = default_output(version).expanduser().resolve()
+        if is_within_directory(deployed_dir, output_dir) or is_within_directory(output_dir, deployed_dir):
+            raise BuildError("--only 的 --output 必须与默认版本目录独立，不能相同、嵌套或包含该目录")
+        validate_partial_destination(output_dir)
     build_python = Path(args.python).expanduser().resolve()
     reuse_root = Path(args.reuse_workdir).expanduser().resolve() if args.reuse_workdir else None
     if reuse_root:
@@ -534,6 +569,7 @@ def build(args: argparse.Namespace) -> Path:
     work_dir = Path(tempfile.mkdtemp(prefix=prefix, dir=str(work_parent) if work_parent else None))
     log_path = work_dir / "build.log"
     log(f"工作目录：{work_dir}")
+    failed = False
 
     try:
         log(f"[1/7] 解析 {REPOSITORY}@{source_ref}")
@@ -542,8 +578,10 @@ def build(args: argparse.Namespace) -> Path:
 
         archive_url = f"https://codeload.github.com/{REPOSITORY}/zip/{commit}"
         if reuse_root:
-            log(f"[2/7] 复用 {reuse_root} 中固定版本的源码归档和源码树")
-            archive, source_dir, python, archive_hash, packages = reuse_build_assets(reuse_root, commit)
+            log(f"[2/7] 从 {reuse_root} 中固定版本的源码归档重新解压")
+            archive, source_dir, python, archive_hash, packages = reuse_build_assets(
+                reuse_root, commit, work_dir / "source",
+            )
             log("[3/7] 复用已校验的隔离 Sphinx 构建环境")
         else:
             log("[2/7] 下载固定版本的源码归档")
@@ -646,14 +684,37 @@ def build(args: argparse.Namespace) -> Path:
         validate_corpus(prepared_dir, files)
 
         log("[7/7] 以原子方式发布已校验的语料")
-        publish_atomically(prepared_dir, output_dir, args.force)
+        publish_atomically(prepared_dir, output_dir, args.force, partial=bool(only_paths))
         log(f"已在 {output_dir} 构建 {len(files)} 个页面")
         return output_dir
+    except BaseException as error:
+        failed = True
+        # 即使失败发生在启动子进程之前，也保留错误原因；不掩盖原始异常。
+        try:
+            with log_path.open("a", encoding="utf-8") as build_log:
+                build_log.write(f"\n构建失败：{type(error).__name__}: {error}\n")
+        except OSError as log_error:
+            log(f"无法追加失败日志 {log_path}：{log_error}")
+        raise
     finally:
         if args.keep_workdir:
             log(f"已保留工作目录：{work_dir}")
+        elif failed:
+            # 日志留在错误消息给出的原路径，仅清理本次运行的其他临时产物。
+            try:
+                for child in work_dir.iterdir():
+                    if child == log_path:
+                        continue
+                    if child.is_dir() and not child.is_symlink():
+                        shutil.rmtree(child)
+                    else:
+                        child.unlink()
+            except OSError as cleanup_error:
+                log(f"部分临时文件未能清理：{cleanup_error}")
         else:
             shutil.rmtree(work_dir, ignore_errors=True)
+        if failed and log_path.is_file():
+            log(f"已保留失败日志：{log_path}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -678,7 +739,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         type=Path,
-        help="输出目录（默认：<skill>/references/godot-docs/<version>）",
+        help="输出目录（默认：<skill>/references/godot-docs/<version>）；--only 必须显式指定独立目录",
     )
     parser.add_argument(
         "--python",
@@ -695,12 +756,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="SOURCE.rst",
-        help="仅构建所选源页面；可重复指定，用于冒烟测试",
+        help="仅构建所选源页面；可重复指定，必须配合独立的 --output，用于冒烟测试",
     )
     parser.add_argument(
         "--force",
         action="store_true",
-        help="新语料校验通过后替换已有的生成语料",
+        help="新语料校验通过后替换已有语料；不允许部分构建替换完整或来源不明的语料",
     )
     work_group = parser.add_mutually_exclusive_group()
     work_group.add_argument(
@@ -711,12 +772,12 @@ def build_parser() -> argparse.ArgumentParser:
     work_group.add_argument(
         "--reuse-workdir",
         type=Path,
-        help="复用先前通过 --keep-workdir 保留的归档、源码树和虚拟环境",
+        help="复用先前保留的归档和虚拟环境；源码每次重新解压，不使用旧源码树",
     )
     parser.add_argument(
         "--keep-workdir",
         action="store_true",
-        help="保留临时源码、HTML、虚拟环境和日志",
+        help="保留临时源码、HTML、虚拟环境和日志；未指定时，失败仍保留 build.log",
     )
     return parser
 

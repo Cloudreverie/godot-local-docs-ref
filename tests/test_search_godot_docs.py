@@ -1039,6 +1039,255 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(payload["results"][4]["excerpt"], "json-excerpt-5")
 
 
+class EvidenceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fixture = CorpusFixture()
+        self.addCleanup(self.fixture.close)
+        self.manifest_path = self.fixture.root / "manifest.json"
+        self.manifest = json.loads(self.manifest_path.read_text())
+
+    def save_manifest(self):
+        self.manifest_path.write_text(json.dumps(self.manifest), encoding="utf-8")
+
+    def add_class(self, title, body):
+        relative = f"classes/class_{title.lower()}.md"
+        (self.fixture.root / relative).write_text(f"# {title}\n\n{body}", encoding="utf-8")
+        self.manifest["files"].append({
+            "path": relative, "title": title,
+            "source_path": relative[:-3] + ".rst", "license": "MIT",
+        })
+        self.save_manifest()
+
+    def add_property_pages(self):
+        self.add_class("Control", """**Inherits:** CanvasItem **<** Node **<** Object
+
+## Property Descriptions
+
+MouseFilter **mouse_filter** = `0`
+
+- void **set_mouse_filter**(value: MouseFilter)
+- MouseFilter **get_mouse_filter**()
+
+Controls mouse input propagation.
+
+---
+
+SizeFlags **size_flags_vertical** = `1`
+""")
+        self.add_class("Label", """**Inherits:** Control **<** CanvasItem **<** Node **<** Object
+
+## Properties
+
+| Type | Name | Default |
+| --- | --- | --- |
+| MouseFilter | mouse_filter | `2` (overrides Control) |
+| SizeFlags | size_flags_vertical | `4` (overrides Control) |
+""")
+
+    def invoke(self, query, *options, json_output=True, default_root=False):
+        arguments = [query, "--no-log", *options]
+        if not default_root:
+            arguments.extend(["--docs-root", str(self.fixture.root)])
+        if json_output:
+            arguments.append("--json")
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = search_godot_docs.main(arguments)
+        output = stdout.getvalue()
+        return code, json.loads(output) if json_output and output else output, stderr.getvalue()
+
+    def test_explicit_version_is_checked_before_search(self):
+        for version in ("4.6", "4.7.2"):
+            with self.subTest(version=version):
+                with mock.patch.object(search_godot_docs, "search_corpus") as search:
+                    code, output, error = self.invoke("Node.queue_free", "--version", version)
+                self.assertEqual(code, 2)
+                self.assertFalse(output)
+                self.assertIn(version, error)
+                self.assertIn("4.7", error)
+                search.assert_not_called()
+
+    def test_matching_and_unspecified_versions_are_reported(self):
+        code, payload, error = self.invoke("Node.queue_free", "--version", "4.7")
+        self.assertEqual((code, error), (0, ""))
+        self.assertEqual(payload["requested_version"], "4.7")
+        self.assertEqual(payload["godot_version"], "4.7")
+        self.manifest["godot_docs"]["version"] = "4.6"
+        self.save_manifest()
+        code, payload, error = self.invoke("Node.queue_free")
+        self.assertEqual((code, error), (0, ""))
+        self.assertIsNone(payload["requested_version"])
+        self.assertEqual(payload["godot_version"], "4.6")
+
+    def test_default_directory_version_cannot_be_mislabeled(self):
+        self.manifest["godot_docs"]["version"] = "4.6"
+        self.save_manifest()
+        with mock.patch.object(search_godot_docs, "default_docs_root", return_value=self.fixture.root):
+            code, _, error = self.invoke("Node.queue_free", default_root=True)
+        self.assertEqual(code, 2)
+        self.assertIn(search_godot_docs.DEFAULT_VERSION, error)
+
+    def test_subclass_defaults_keep_both_sources_and_parent_excerpt(self):
+        self.add_property_pages()
+        for member, expected, parent in (("mouse_filter", "2", "0"), ("size_flags_vertical", "4", "1")):
+            with self.subTest(member=member):
+                code, payload, _ = self.invoke(f"Label.{member}", "--show-best")
+                self.assertEqual(code, 0)
+                result = payload["results"][0]
+                self.assertEqual(result["target_class"], "Label")
+                self.assertEqual(result["declaring_class"], "Control")
+                self.assertIn(f"= `{parent}`", result["excerpt"])
+                evidence = result["document_default"]
+                self.assertEqual(evidence["value"], expected)
+                self.assertEqual(evidence["title"], "Label")
+                lines = (self.fixture.root / evidence["path"]).read_text().splitlines()
+                self.assertEqual(lines[evidence["line"] - 1], evidence["excerpt"])
+                self.assertIn("overrides Control", evidence["excerpt"])
+                _, text, _ = self.invoke(f"Label.{member}", "--show-best", json_output=False)
+                self.assertIn("文档默认值", text)
+                self.assertIn(f"{evidence['path']}:{evidence['line']}", text)
+
+    def test_defaults_follow_nearest_override_and_property_accessor(self):
+        self.add_property_pages()
+        self.add_class("DerivedLabel", "**Inherits:** Label **<** Control **<** CanvasItem **<** Node **<** Object\n")
+        for query, expected, source in (
+            ("DerivedLabel.mouse_filter", "2", "Label"),
+            ("Label.get_mouse_filter()", "2", "Label"),
+            ("Label.visible", "true", "CanvasItem"),
+            ("Control.mouse_filter", "0", "Control"),
+        ):
+            with self.subTest(query=query):
+                _, payload, _ = self.invoke(query, "--show-best")
+                evidence = payload["results"][0]["document_default"]
+                self.assertEqual((evidence["value"], evidence["title"]), (expected, source))
+        page = self.fixture.root / "classes/class_derivedlabel.md"
+        page.write_text(page.read_text() + "\n## Properties\n\n| Type | Name | Default |\n| --- | --- | --- |\n| MouseFilter | mouse_filter | `1` (overrides Control) |\n")
+        _, payload, _ = self.invoke("DerivedLabel.mouse_filter", "--show-best")
+        self.assertEqual(payload["results"][0]["document_default"]["value"], "1")
+
+    def test_override_parser_ignores_examples_and_other_sections(self):
+        self.add_property_pages()
+        page = self.fixture.root / "classes/class_label.md"
+        page.write_text("""# Label
+
+**Inherits:** Control **<** CanvasItem **<** Node **<** Object
+
+## Properties
+
+```text
+| MouseFilter | mouse_filter | `99` (overrides Control) |
+```
+
+| Type | Name | Default |
+| --- | --- | --- |
+| MouseFilter | another_property | `98` (overrides Control) |
+
+## Theme Properties
+
+| MouseFilter | mouse_filter | `97` (overrides Control) |
+""")
+        _, payload, _ = self.invoke("Label.mouse_filter", "--show-best")
+        self.assertEqual(payload["results"][0]["document_default"]["value"], "0")
+
+    def test_string_defaults_keep_empty_strings_and_table_pipes(self):
+        self.add_class("BaseText", '## Property Descriptions\n\nString **text** = `""`\n')
+        self.add_class("DerivedText", '**Inherits:** BaseText\n\n## Properties\n\n| Type | Name | Default |\n| --- | --- | --- |\n| String | text | `"a\\|b"` (overrides BaseText) |\n')
+        for title, expected in (("BaseText", '""'), ("DerivedText", '"a|b"')):
+            _, payload, _ = self.invoke(f"{title}.text", "--show-best")
+            self.assertEqual(payload["results"][0]["document_default"]["value"], expected)
+
+    def test_partial_and_legacy_corpus_coverage(self):
+        for metadata, expected in ((None, "unknown"), ({"selected_sources": None}, "full"), ({"selected_sources": ["classes/class_node.rst"]}, "partial")):
+            with self.subTest(coverage=expected):
+                if metadata is None:
+                    self.manifest.pop("build", None)
+                else:
+                    self.manifest["build"] = metadata
+                self.save_manifest()
+                for query in ("Node.queue_free", "Node.nonexistent"):
+                    _, payload, _ = self.invoke(query)
+                    self.assertEqual(payload["corpus_coverage"], expected)
+                    self.assertEqual(bool(payload["warnings"]), expected == "partial")
+
+    def test_invalid_coverage_metadata_is_not_reported_as_full(self):
+        for selected in ([], "all", False, [None]):
+            with self.subTest(selected=selected):
+                self.manifest["build"] = {"selected_sources": selected}
+                self.save_manifest()
+                code, _, error = self.invoke("Node.queue_free")
+                self.assertEqual(code, 2)
+                self.assertIn("selected_sources", error)
+
+    def test_default_evidence_is_bounded_and_absence_is_not_a_value(self):
+        self.add_class("LongText", '## Property Descriptions\n\nString **text** = `"' + 'x' * 1000 + '"`\n')
+        _, payload, _ = self.invoke("LongText.text", "--show-best", "--max-chars", "200")
+        evidence = payload["results"][0]["document_default"]
+        self.assertTrue(evidence["truncated"])
+        self.assertLessEqual(len(evidence["value"]), 202)
+        self.assertLessEqual(len(evidence["excerpt"]), 202)
+        (self.fixture.root / "classes/class_longtext.md").write_text('# LongText\n\n## Property Descriptions\n\nString **text**\n')
+        _, payload, _ = self.invoke("LongText.text", "--show-best")
+        self.assertIsNone(payload["results"][0]["document_default"])
+
+    def test_missing_ancestor_is_distinct_from_no_match(self):
+        self.manifest["files"] = [e for e in self.manifest["files"] if e["title"] != "BaseButton"]
+        self.save_manifest()
+        code, payload, _ = self.invoke("Button.pressed", "--show-best")
+        self.assertEqual(code, 1)
+        self.assertIn("BaseButton", payload["missing_ancestors"])
+        self.assertTrue(payload["warnings"])
+        _, text, _ = self.invoke("Button.pressed", json_output=False)
+        self.assertIn("BaseButton", text)
+        self.assertIn("不能据此", text)
+
+    def test_gap_before_definition_prevents_claiming_target_default(self):
+        self.add_property_pages()
+        self.add_class("GapLabel", "**Inherits:** MissingControl **<** Control **<** CanvasItem **<** Node **<** Object\n")
+        code, payload, _ = self.invoke("GapLabel.mouse_filter", "--show-best")
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["missing_ancestors"], ["MissingControl"])
+        self.assertIsNone(payload["results"][0]["document_default"])
+        self.assertTrue(payload["warnings"])
+        page = self.fixture.root / "classes/class_gaplabel.md"
+        page.write_text(page.read_text() + "\n## Properties\n\n| Type | Name | Default |\n| --- | --- | --- |\n| MouseFilter | mouse_filter | `2` (overrides Control) |\n")
+        _, payload, _ = self.invoke("GapLabel.mouse_filter", "--show-best")
+        self.assertEqual(payload["results"][0]["document_default"]["value"], "2")
+        self.assertEqual(payload["missing_ancestors"], ["MissingControl"])
+        _, payload, _ = self.invoke("Control.mouse_filter", "--show-best")
+        self.assertFalse(payload["missing_ancestors"])
+
+    def test_missing_ancestors_after_definition_do_not_warn(self):
+        self.add_property_pages()
+        self.manifest["files"] = [e for e in self.manifest["files"] if e["title"] != "Object"]
+        self.save_manifest()
+        _, payload, _ = self.invoke("Label.mouse_filter", "--show-best")
+        self.assertFalse(payload["missing_ancestors"])
+        self.assertFalse(payload["warnings"])
+
+    def test_operator_and_cross_class_ambiguity_survives_output_limit(self):
+        page = self.fixture.root / "classes/class_vector3.md"
+        page.write_text(page.read_text() + '\n---\n\n' + r'Vector3 **operator \***(right: Vector3)' + '\n')
+        self.add_class("OtherObject", "## Method Descriptions\n\nvoid **free**()\n")
+        for query in ("Vector3.operator *", "free()"):
+            for options in (("--show-best",), ("--limit", "1"), ()):
+                with self.subTest(query=query, options=options):
+                    code, payload, _ = self.invoke(query, *options)
+                    self.assertEqual(code, 0)
+                    self.assertTrue(payload["ambiguous"])
+                    self.assertTrue(payload["warnings"])
+                    if options:
+                        self.assertEqual(len(payload["results"]), 1)
+            _, text, _ = self.invoke(query, "--show-best", json_output=False)
+            self.assertIn("尚未消歧", text)
+
+    def test_overridden_methods_and_concept_candidates_are_not_ambiguous(self):
+        self.add_class("CustomObject", "**Inherits:** Object\n\n## Method Descriptions\n\nvoid **free**()\n")
+        for query in ("CustomObject.free", "input actions"):
+            _, payload, _ = self.invoke(query, "--show-best")
+            self.assertFalse(payload["ambiguous"])
+            self.assertFalse(payload["warnings"])
+
+
 class UsageLogTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fixture = CorpusFixture()
@@ -1137,6 +1386,24 @@ class UsageLogTests(unittest.TestCase):
         self.assertIn("--limit", records[1]["error"])
         self.assertIn("manifest.json", records[2]["error"])
         self.assertTrue(records[3]["warnings"])
+        self.assertTrue(records[3]["ambiguous"])
+
+    def test_version_conflict_and_incomplete_evidence_are_logged(self):
+        options = ["--log-file", str(self.log_path)]
+        self.assertEqual(self.invoke(options=[*options, "--version", "4.6"])[0], 2)
+        manifest_path = self.fixture.root / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["build"] = {"selected_sources": ["classes/class_button.rst"]}
+        manifest["files"] = [entry for entry in manifest["files"] if entry["title"] != "BaseButton"]
+        manifest_path.write_text(json.dumps(manifest))
+        self.assertEqual(self.invoke("Button.pressed", options)[0], 1)
+        conflict, incomplete = self.read_records()
+        self.assertEqual(conflict["requested_version"], "4.6")
+        self.assertEqual(conflict["godot_version"], "4.7")
+        self.assertEqual(conflict["status"], "error")
+        self.assertEqual(incomplete["corpus_coverage"], "partial")
+        self.assertIn("BaseButton", incomplete["missing_ancestors"])
+        self.assertTrue(incomplete["warnings"])
 
     def test_unwritable_log_does_not_change_search_or_json(self) -> None:
         self.log_path.mkdir(parents=True)
@@ -1205,7 +1472,7 @@ class FailureTests(unittest.TestCase):
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
                 exit_code = search_godot_docs.main(
-                    ["Node", "--docs-root", str(Path(temporary) / "missing")]
+                    ["Node", "--docs-root", str(Path(temporary) / "missing"), "--no-log"]
                 )
             self.assertEqual(exit_code, 2)
             self.assertIn("部署者需要运行 scripts/build_godot_docs.py", stderr.getvalue())

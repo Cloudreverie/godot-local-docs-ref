@@ -1,0 +1,53 @@
+name: 隔离回归测试
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.13']
+    steps:
+      - name: 获取代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 配置 Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 安装转换测试依赖
+        # 直接读取构建脚本的版本约束，避免在 CI 中另维护一份。
+        run: |
+          python -B - <<'PY'
+          import runpy
+          import subprocess
+          import sys
+
+          requirements = runpy.run_path('scripts/build_godot_docs.py')['CONVERTER_REQUIREMENTS']
+          subprocess.run([sys.executable, '-m', 'pip', 'install', *requirements], check=True)
+          PY
+
+      # 显式选择隔离测试；不下载 Godot 语料，不运行需要 references/ 的集成测试。
+      - name: 构建逻辑测试
+        run: python -B -m unittest discover -s tests -p 'test_build_godot_docs.py'
+
+      - name: 检索逻辑测试
+        run: python -B -m unittest discover -s tests -p 'test_search_godot_docs.py'
+
+      - name: 反馈记录测试
+        run: python -B -m unittest discover -s tests -p 'test_record_godot_docs_feedback.py'
+
+      - name: 转换与检索衔接测试
+        run: python -B -m unittest discover -s tests -p 'test_conversion_pipeline.py'

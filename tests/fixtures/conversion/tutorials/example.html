@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- 手写样例：警告、语言标签、代码中的伪标题，以及双语言选项卡。 -->
+<html><body>
+<nav>navigation-only</nav>
+<div itemprop="articleBody"><section id="example">
+<h1>Example workflow<a class="headerlink" href="#example"></a></h1>
+<section id="lifecycle"><h2>Lifecycle example</h2>
+<p>This fixture demonstrates a lifecycle review.</p>
+<div class="admonition warning"><p class="admonition-title">Warning</p><p>Fixture warning: verify the lifecycle before editing the example.</p></div>
+<div class="sphinx-tabs docutils container">
+<div role="tablist" class="sphinx-tabs-tabgroup"><button aria-controls="gd-panel">GDScript</button><button aria-controls="cs-panel">C#</button></div>
+<div class="sphinx-tabs-panel" id="gd-panel"><div class="highlight-gdscript notranslate"><div class="highlight"><pre><span></span>## This is a code comment, not a section
+func sample():
+    print("fixture")
+</pre></div></div></div>
+<div class="sphinx-tabs-panel" id="cs-panel"><div class="highlight-csharp notranslate"><div class="highlight"><pre><span></span>void Sample() { GD.Print("fixture"); }
+</pre></div></div></div>
+</div>
+</section>
+<section id="follow-up"><h2>Follow-up example</h2><p>Additional fixture context.</p><p><a href="other.html">Another page</a></p></section>
+<script>script-only</script>
+</section></div></body></html>
