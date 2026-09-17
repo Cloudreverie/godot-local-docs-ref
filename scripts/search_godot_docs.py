@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-SCRIPT_VERSION = "1.7.0"
+SCRIPT_VERSION = "1.8.0"
 DEFAULT_VERSION = "4.7"
 RANKED_EXCERPT_LIMIT = 3
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -717,11 +717,17 @@ def score_title(document: Document, parsed: ParsedQuery) -> int:
     query = parsed.normalized
     if not query:
         return 0
+    leading_word = re.match(r"@?[A-Za-z_][A-Za-z0-9_]*", parsed.raw) if document.is_class_reference else None
+    leading_identifier = leading_word.group().casefold() if leading_word else None
     score = 0
     if title == query:
         score += 1000
-    elif title.startswith(query) or query.startswith(title + " "):
+    elif leading_identifier == document.title.casefold():
         score += 550
+    elif title.startswith(query) or query.startswith(title + " "):
+        # ShaderMaterial 的完整类名优先；拆词产生的 Shader 前缀不获得同等奖励。
+        if leading_identifier is None or not leading_identifier.startswith(document.title.casefold()):
+            score += 550
     elif query in title:
         score += 350
     elif len(query) >= 5 and len(title) >= 5:
@@ -1337,6 +1343,22 @@ def identifier_like(value: str) -> bool:
     )
 
 
+def mixed_member_query_warning(parsed: ParsedQuery) -> Optional[str]:
+    """限定成员后附带其他词项时提供纠正提示，保留原有精确匹配行为。"""
+    if not parsed.class_document or not parsed.member or parsed.invalid_explicit_call:
+        return None
+    if class_section_alias(parsed.member):
+        return None
+    parts = parsed.member.split(maxsplit=1)
+    if len(parts) != 2 or parts[0].casefold() == "operator" or not identifier_like(parts[0]):
+        return None
+    first_query = f"{parsed.class_document.title}.{parts[0]}"
+    return (
+        "查询混合了限定成员和其他词项，请拆分后每次查询一个 API，"
+        f"例如先单独查询 `{first_query}`；其余 API 请分别写成 Class.member，概念描述请单独查询。"
+    )
+
+
 def sort_and_deduplicate(
     results: Iterable[SearchResult],
     limit: int,
@@ -1610,6 +1632,10 @@ def run_search(args: argparse.Namespace, record: Dict[str, Any]) -> int:
         return fail(str(error))
 
     warnings: List[str] = []
+    if not results and args.mode in {"auto", "member"}:
+        guidance = mixed_member_query_warning(parsed)
+        if guidance:
+            warnings.append(guidance)
     if corpus.coverage == "partial":
         warnings.append("当前语料仅包含构建时选择的部分页面；无结果不能据此证明 API 不存在。")
     if diagnostics.missing_ancestors:
@@ -1645,8 +1671,8 @@ def run_search(args: argparse.Namespace, record: Dict[str, Any]) -> int:
     return 0 if results else 1
 
 
-def resolve_log_path(args: argparse.Namespace, key: str) -> Optional[Path]:
-    """命令行优先，其次为 Skill 本地配置，缺少该键或配置文件时关闭。"""
+def resolve_log_path(args: argparse.Namespace) -> Optional[Path]:
+    """命令行优先，其次为 Skill 本地 LOG_FILE，缺少该键或配置文件时关闭。"""
     if args.no_log:
         return None
     if args.log_file is not None:
@@ -1659,12 +1685,12 @@ def resolve_log_path(args: argparse.Namespace, key: str) -> Optional[Path]:
             config = {}
         if not isinstance(config, dict):
             raise ValueError("配置必须是 JSON 对象")
-        if key in config:
-            value = config[key]
+        if "LOG_FILE" in config:
+            value = config["LOG_FILE"]
             if value is None or value == "":
                 return None
             if not isinstance(value, str) or not value.strip():
-                raise ValueError(f"{key} 必须是文件路径字符串或 null")
+                raise ValueError("LOG_FILE 必须是文件路径字符串或 null")
             path = Path(value).expanduser()
             return path if path.is_absolute() else SKILL_DIR / path
     except (OSError, ValueError, RuntimeError) as error:
@@ -1700,7 +1726,7 @@ def append_usage_log(path: Path, docs_root: Path, record: Dict[str, Any]) -> Non
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
-    log_path = resolve_log_path(args, "LOG_FILE")
+    log_path = resolve_log_path(args)
     started = time.perf_counter()
     record: Dict[str, Any] = {}
     exit_code = run_search(args, record)

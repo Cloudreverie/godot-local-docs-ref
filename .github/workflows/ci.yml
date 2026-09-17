@@ -46,8 +46,5 @@ jobs:
       - name: 检索逻辑测试
         run: python -B -m unittest discover -s tests -p 'test_search_godot_docs.py'
 
-      - name: 反馈记录测试
-        run: python -B -m unittest discover -s tests -p 'test_record_godot_docs_feedback.py'
-
       - name: 转换与检索衔接测试
         run: python -B -m unittest discover -s tests -p 'test_conversion_pipeline.py'

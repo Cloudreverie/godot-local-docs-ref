@@ -31,8 +31,11 @@ venv/
 *.log
 *~
 
-# 本地检索日志与反馈
+# 本地检索日志
 usage.jsonl
+/usage-samples/
+
+# 旧版评价记录继续忽略，避免已有本地记录被误提交
 feedback.jsonl
 
 # Agent 本地配置

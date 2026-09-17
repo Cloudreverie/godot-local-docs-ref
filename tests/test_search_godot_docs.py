@@ -1287,6 +1287,87 @@ SizeFlags **size_flags_vertical** = `1`
             self.assertFalse(payload["ambiguous"])
             self.assertFalse(payload["warnings"])
 
+    def test_usage_mixed_member_queries_explain_how_to_split(self):
+        # 来自实际使用日志；占位页面只验证查询解析，不作为引擎事实来源。
+        queries = (
+            "CanvasItem._draw draw_texture queue_redraw",
+            "Resource.duplicate local_to_scene resource_local_to_scene",
+            "Control.mouse_filter focus_mode",
+            "Control.force_drag _get_drag_data Viewport.push_input",
+            "InputEventScreenTouch.position pressed index double_tap",
+            "InputEventMouseButton.position pressed button_index double_click",
+            "InputEventMouseMotion.position relative",
+            "FileAccess.open get_open_error flush close get_error",
+            "DirAccess.rename_absolute remove_absolute file_exists",
+            "TranslationServer.set_locale get_locale translation_changed",
+            "OS.get_locale get_locale_language",
+        )
+        titles = {entry["title"] for entry in self.manifest["files"]}
+        for title in sorted({query.split(".", 1)[0] for query in queries} - titles):
+            self.add_class(title, "查询解析测试的占位正文。\n")
+        for query in queries:
+            for mode in ("auto", "member"):
+                with self.subTest(query=query, mode=mode):
+                    code, payload, error = self.invoke(query, "--mode", mode)
+                    self.assertEqual((code, payload["results"], error), (1, [], ""))
+                    self.assertFalse(payload["ambiguous"])
+                    guidance = " ".join(payload["warnings"])
+                    self.assertIn("拆分", guidance)
+                    self.assertIn(query.split()[0], guidance)
+
+    def test_mixed_query_text_guides_retry_without_returning_partial_matches(self):
+        query = "Node.queue_free remove_child"
+        code, text, _ = self.invoke(query, "--show-best", json_output=False)
+        self.assertEqual(code, 1)
+        self.assertIn("拆分", text)
+        self.assertIn("Node.queue_free", text)
+        self.assertNotIn("--mode content", text)
+        for query in ("Node.queue_free", "Node.remove_child"):
+            code, payload, _ = self.invoke(query, "--show-best")
+            self.assertEqual(code, 0)
+            self.assertEqual(len(payload["results"]), 1)
+            self.assertEqual(payload["results"][0]["kind"], "method")
+            self.assertFalse(payload["warnings"])
+
+    def test_mixed_query_guidance_preserves_calls_operators_sections_and_modes(self):
+        for query in (
+            "Vector2(1, 2)", 'Node.queue_free("two words")',
+            "Node.queue_free( )", "Vector3.operator *", "Vector3.operator +",
+            "Node.methods", "Node.theme properties", "Node.nonexistent", "Wrong.member",
+        ):
+            with self.subTest(query=query):
+                _, payload, _ = self.invoke(query)
+                self.assertFalse(payload["warnings"])
+        for mode in ("title", "section", "content"):
+            _, payload, _ = self.invoke("Node.queue_free remove_child", "--mode", mode)
+            self.assertFalse(payload["warnings"])
+
+    def test_usage_full_class_name_beats_shorter_class_prefix(self):
+        for title in ("Shader", "ShaderMaterial", "InputEvent", "InputEventMouseButton"):
+            self.add_class(title, "标题排序测试的占位正文。\n")
+        for query, expected in (
+            ("ShaderMaterial set_shader_parameter shared resource duplicate", "ShaderMaterial"),
+            ("ShaderMaterial set_shader_parameter shared resource local_to_scene", "ShaderMaterial"),
+            ("shadermaterial set_shader_parameter shared resource duplicate", "ShaderMaterial"),
+            ("InputEventMouseButton button_mask", "InputEventMouseButton"),
+        ):
+            for mode in ("auto", "title"):
+                with self.subTest(query=query, mode=mode):
+                    code, payload, _ = self.invoke(query, "--show-best", "--mode", mode)
+                    self.assertEqual(code, 0)
+                    self.assertEqual(payload["results"][0]["title"], expected)
+
+    def test_short_class_and_partial_class_title_queries_keep_working(self):
+        for title in ("Shader", "ShaderMaterial"):
+            self.add_class(title, "标题排序测试的占位正文。\n")
+        for query in ("Shader", "Shader uniforms"):
+            code, payload, _ = self.invoke(query, "--show-best")
+            self.assertEqual(code, 0)
+            self.assertEqual(payload["results"][0]["title"], "Shader")
+        code, payload, _ = self.invoke("Shade", "--mode", "title")
+        self.assertEqual(code, 0)
+        self.assertEqual({result["title"] for result in payload["results"]}, {"Shader", "ShaderMaterial"})
+
 
 class UsageLogTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1404,6 +1485,17 @@ class UsageLogTests(unittest.TestCase):
         self.assertEqual(incomplete["corpus_coverage"], "partial")
         self.assertIn("BaseButton", incomplete["missing_ancestors"])
         self.assertTrue(incomplete["warnings"])
+
+    def test_mixed_query_guidance_is_recorded_with_no_match(self):
+        code, output, error = self.invoke(
+            "Node.queue_free remove_child", ["--log-file", str(self.log_path)],
+        )
+        payload = json.loads(output)
+        record = self.read_records()[0]
+        self.assertEqual((code, error, record["status"]), (1, "", "no_matches"))
+        self.assertEqual(record["results"], [])
+        self.assertEqual(record["warnings"], payload["warnings"])
+        self.assertIn("拆分", " ".join(record["warnings"]))
 
     def test_unwritable_log_does_not_change_search_or_json(self) -> None:
         self.log_path.mkdir(parents=True)
