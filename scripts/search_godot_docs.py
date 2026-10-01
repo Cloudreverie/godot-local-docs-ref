@@ -14,7 +14,7 @@ import os
 import re
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from functools import lru_cache
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-SCRIPT_VERSION = "1.8.0"
+SCRIPT_VERSION = "1.9.0"
 DEFAULT_VERSION = "4.7"
 RANKED_EXCERPT_LIMIT = 3
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -392,7 +392,7 @@ def term_coverage(terms: Sequence[str], text: str) -> Tuple[int, int]:
 
 
 @lru_cache(maxsize=512)
-def term_pattern(term: str) -> re.Pattern[str]:
+def term_forms(term: str) -> Tuple[str, ...]:
     forms = {term}
     if len(term) > 2:
         if term.endswith("y") and term[-2] not in "aeiou":
@@ -406,9 +406,12 @@ def term_pattern(term: str) -> re.Pattern[str]:
         else:
             forms.add(term + "ed")
             forms.add(term + "ing")
-    alternatives = "|".join(
-        re.escape(form) for form in sorted(forms, key=lambda item: (-len(item), item))
-    )
+    return tuple(sorted(forms, key=lambda item: (-len(item), item)))
+
+
+@lru_cache(maxsize=512)
+def term_pattern(term: str) -> re.Pattern[str]:
+    alternatives = "|".join(re.escape(form) for form in term_forms(term))
     return re.compile(rf"\b(?:{alternatives})\b")
 
 
@@ -530,15 +533,24 @@ def parse_sections(lines: Sequence[str]) -> List[Section]:
         match = HEADING_RE.match(lines[index])
         if match:
             headings.append((index, len(match.group(1)), match.group(2).strip()))
-    sections: List[Section] = []
-    for position, (line_index, level, title) in enumerate(headings):
-        end = len(lines)
-        for next_index, next_level, _ in headings[position + 1 :]:
-            if next_level <= level:
-                end = next_index
-                break
-        sections.append(Section(level, title, line_index, end))
-    return sections
+    ends = [len(lines)] * len(headings)
+    open_sections: List[int] = []
+    for position, (line_index, level, _) in enumerate(headings):
+        while open_sections and headings[open_sections[-1]][1] >= level:
+            ends[open_sections.pop()] = line_index
+        open_sections.append(position)
+    return [
+        Section(level, title, line_index, ends[position])
+        for position, (line_index, level, title) in enumerate(headings)
+    ]
+
+
+def cached_sections(
+    document: Document, lines: Sequence[str], cache: Dict[str, List[Section]],
+) -> List[Section]:
+    if document.relative_path not in cache:
+        cache[document.relative_path] = parse_sections(lines)
+    return cache[document.relative_path]
 
 
 def unescape_markdown_name(value: str) -> str:
@@ -836,20 +848,21 @@ def parse_query(raw_query: str, corpus: Corpus) -> ParsedQuery:
         )
 
     normalized_separators = re.sub(r"::", ".", raw)
-    for document in sorted(class_documents, key=lambda item: len(item.title), reverse=True):
-        if re.match(
-            rf"^{re.escape(document.title)}\s*\(",
-            normalized_separators,
-            flags=re.IGNORECASE,
-        ):
-            return ParsedQuery(
-                raw,
-                normalized,
-                terms,
-                document,
-                document.title,
-                invalid_explicit_call=True,
-            )
+    if "(" in normalized_separators:
+        for document in sorted(class_documents, key=lambda item: len(item.title), reverse=True):
+            if re.match(
+                rf"^{re.escape(document.title)}\s*\(",
+                normalized_separators,
+                flags=re.IGNORECASE,
+            ):
+                return ParsedQuery(
+                    raw,
+                    normalized,
+                    terms,
+                    document,
+                    document.title,
+                    invalid_explicit_call=True,
+                )
 
     class_document, member = split_explicit_class_member(raw, class_documents)
     return ParsedQuery(raw, normalized, terms, class_document, member)
@@ -1069,9 +1082,16 @@ def member_results(
         )
     else:
         documents = (document for document in corpus.documents if document.is_class_reference)
+    _, requested_name = split_member_target(target)
+    expected_name = canonical_member_name(requested_name)
+    simple_name = re.fullmatch(r"@?[a-z0-9_]+", expected_name)
     results: List[SearchResult] = []
     for distance, document in enumerate(documents):
         lines = read_lines(document, cache)
+        if not parsed.class_document and simple_name:
+            # 声明和访问器必含名称；移除转义符得到宽松预筛选，最终仍由声明解析确认。
+            if expected_name not in "\n".join(lines).replace("\\", "").casefold():
+                continue
         sections = parse_sections(lines)
         for block in class_member_blocks(lines, sections):
             if not member_block_matches(block, document, target):
@@ -1142,14 +1162,17 @@ def section_results(
     cache: Dict[str, List[str]],
     documents: Optional[Iterable[Document]] = None,
     target: Optional[str] = None,
+    sections_cache: Optional[Dict[str, List[Section]]] = None,
 ) -> List[SearchResult]:
     target_value = target or parsed.raw
     target_normalized = normalize(target_value)
     terms = query_terms(target_value)
+    if sections_cache is None:
+        sections_cache = {}
     results: List[SearchResult] = []
     for document in documents or corpus.documents:
         lines = read_lines(document, cache)
-        for section in parse_sections(lines):
+        for section in cached_sections(document, lines, sections_cache):
             heading = normalize(section.title)
             score = 0
             if heading == target_normalized:
@@ -1197,9 +1220,11 @@ def score_content_text(
     target: str,
     terms: Sequence[str],
     flexible_terms: bool = False,
+    normalized_target: Optional[str] = None,
 ) -> int:
     normalized_line = normalize_prose(text)
-    normalized_target = normalize_prose(target)
+    if normalized_target is None:
+        normalized_target = normalize_prose(target)
     if not normalized_line or not normalized_target:
         return 0
     score = 0
@@ -1226,6 +1251,7 @@ def score_page_relevance(
     document: Document,
     parsed: ParsedQuery,
     lines: Sequence[str],
+    sections_cache: Optional[Dict[str, List[Section]]] = None,
 ) -> int:
     """对分布在整页中的概念词项评分，不局限于单个段落。"""
     expected = set(parsed.terms)
@@ -1238,7 +1264,9 @@ def score_page_relevance(
         return 0
 
     title_hits, _ = term_coverage(expected, document.title)
-    heading_text = "\n".join(section.title for section in parse_sections(lines))
+    if sections_cache is None:
+        sections_cache = {}
+    heading_text = "\n".join(section.title for section in cached_sections(document, lines, sections_cache))
     heading_hits, _ = term_coverage(expected, heading_text)
 
     score = 120
@@ -1280,16 +1308,31 @@ def content_results(
     documents: Optional[Iterable[Document]] = None,
     target: Optional[str] = None,
     page_level: bool = False,
+    sections_cache: Optional[Dict[str, List[Section]]] = None,
 ) -> List[SearchResult]:
     target_value = target or parsed.raw
     terms = query_terms(target_value)
+    normalized_target = normalize_prose(target_value)
+    literal_terms = normalized_target.split()
+    if sections_cache is None:
+        sections_cache = {}
     results: List[SearchResult] = []
     for document in documents or corpus.documents:
         lines = read_lines(document, cache)
-        fenced = fenced_lines(lines)
-        page_score = score_page_relevance(document, parsed, lines) if page_level else 0
+        page_text = "\n".join(lines[body_start(lines):]).casefold()
+        if page_level and len(set(parsed.terms)) >= 2:
+            # CamelCase 拆词只插入分隔符；任何可命中的词形都必须原样出现在大小写归一的原文中。
+            if any(not any(form in page_text for form in term_forms(term)) for term in parsed.terms):
+                continue
+        page_score = score_page_relevance(document, parsed, lines, sections_cache) if page_level else 0
         if page_level and len(set(parsed.terms)) >= 2 and not page_score:
             continue
+        if not page_level:
+            # 短语命中要求原词项存在，词项命中要求归并词项存在；仅排除两者都不可能的页面。
+            # 标点和换行不影响这项宽松检查，实际匹配仍由段落评分确认。
+            if not all(term in page_text for term in literal_terms) and not all(term in page_text for term in terms):
+                continue
+        fenced: Optional[List[bool]] = None
         best_score = 0
         best_range: Optional[Tuple[int, int]] = None
         for begin, end in content_blocks(lines):
@@ -1298,9 +1341,13 @@ def content_results(
                 target_value,
                 terms,
                 flexible_terms=page_level,
+                normalized_target=normalized_target,
             )
-            if score and any(fenced[begin:end]):
-                score += 25
+            if score:
+                if fenced is None:
+                    fenced = fenced_lines(lines)
+                if any(fenced[begin:end]):
+                    score += 25
             if score > best_score:
                 best_score = score
                 best_range = (begin, end)
@@ -1309,7 +1356,7 @@ def content_results(
         if best_range is None:
             continue
         best_start, best_end = best_range
-        sections = parse_sections(lines)
+        sections = cached_sections(document, lines, sections_cache)
         section = containing_section(sections, best_start)
         excerpt, truncated = text_for_range(
             lines,
@@ -1359,6 +1406,27 @@ def mixed_member_query_warning(parsed: ParsedQuery) -> Optional[str]:
     )
 
 
+def class_query_hint(corpus: Corpus, parsed: ParsedQuery) -> Optional[ParsedQuery]:
+    """完整类名后带空格时保留查询线索；小写的普通概念词不视为显式类名。"""
+    match = re.fullmatch(r"(@?[A-Za-z_][A-Za-z0-9_]*)\s+(.+)", parsed.raw)
+    if not match:
+        return None
+    document = next((
+        document for document in corpus.documents
+        if document.is_class_reference and document.title == match.group(1)
+    ), None)
+    return replace(parsed, class_document=document, member=match.group(2)) if document else None
+
+
+def prefer_class_identity(results: Iterable[SearchResult], hint: Optional[ParsedQuery]) -> List[SearchResult]:
+    """将完整类名的线索保留到综合排序；手册页面仍按相关性参与排序。"""
+    return [
+        replace(result, score=result.score + 550)
+        if hint and result.document == hint.class_document else result
+        for result in results
+    ]
+
+
 def sort_and_deduplicate(
     results: Iterable[SearchResult],
     limit: int,
@@ -1394,17 +1462,20 @@ def search_corpus(
     diagnostics: Optional[SearchDiagnostics] = None,
 ) -> List[SearchResult]:
     cache: Dict[str, List[str]] = {}
+    sections_cache: Dict[str, List[Section]] = {}
 
-    def ranked_members() -> List[SearchResult]:
-        candidates = member_results(corpus, parsed, max_chars, cache, diagnostics)
+    def ranked_members(
+        query: ParsedQuery = parsed, report: Optional[SearchDiagnostics] = diagnostics,
+    ) -> List[SearchResult]:
+        candidates = member_results(corpus, query, max_chars, cache, report)
         ordered = sort_and_deduplicate(candidates, len(candidates))
-        if diagnostics is not None and ordered:
+        if report is not None and ordered:
             # 类名已限定时，较远祖先的同名声明不构成重载歧义。
             applicable = [
                 result for result in ordered
-                if not parsed.class_document or result.document == ordered[0].document
+                if not query.class_document or result.document == ordered[0].document
             ]
-            diagnostics.ambiguous = len(applicable) > 1
+            report.ambiguous = len(applicable) > 1
         return ordered[:limit]
 
     if parsed.invalid_explicit_call and mode in {"auto", "member"}:
@@ -1435,7 +1506,7 @@ def search_corpus(
             )
         else:
             candidates = content_results(corpus, parsed, max_chars, context, cache)
-        return sort_and_deduplicate(candidates, limit)
+        return sort_and_deduplicate(prefer_class_identity(candidates, class_query_hint(corpus, parsed)), limit)
 
     if parsed.class_document and parsed.member:
         section_target = (
@@ -1459,6 +1530,16 @@ def search_corpus(
     if exact_title:
         return sort_and_deduplicate(title_results(corpus, parsed, max_chars, cache), limit)
 
+    hint = class_query_hint(corpus, parsed)
+    if hint and hint.member and identifier_like(hint.member):
+        hint_report = SearchDiagnostics()
+        candidates = ranked_members(hint, hint_report)
+        if candidates:
+            if diagnostics is not None:
+                diagnostics.missing_ancestors = hint_report.missing_ancestors
+                diagnostics.ambiguous = hint_report.ambiguous
+            return candidates
+
     if parsed.member or identifier_like(parsed.raw):
         candidates = ranked_members()
         if candidates:
@@ -1467,7 +1548,7 @@ def search_corpus(
             return []
 
     candidates = title_results(corpus, parsed, max_chars, cache)
-    candidates.extend(section_results(corpus, parsed, max_chars, cache))
+    candidates.extend(section_results(corpus, parsed, max_chars, cache, sections_cache=sections_cache))
     candidates.extend(
         content_results(
             corpus,
@@ -1476,9 +1557,10 @@ def search_corpus(
             context,
             cache,
             page_level=True,
+            sections_cache=sections_cache,
         )
     )
-    return sort_and_deduplicate(candidates, limit, one_per_document=True)
+    return sort_and_deduplicate(prefer_class_identity(candidates, hint), limit, one_per_document=True)
 
 
 def render_member_context(result: SearchResult, indent: str = "") -> None:

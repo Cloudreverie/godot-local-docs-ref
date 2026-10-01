@@ -51,6 +51,10 @@ JSON 输出包含以下证据信息；文本输出会在相关结果旁提示：
 
 `auto` / `member` 模式中，将 `Class.member` 与其他词项混写而无匹配时，会在文本、JSON 的 `warnings` 和检索日志中提示拆分，退出码为 `1`。概念查询以完整类名开头时，标题排序优先匹配该类，避免将 `ShaderMaterial` 的拆词前缀误当成 `Shader`。
 
+`auto` 模式也接受按官方大小写拼写的完整类名后接单个成员名，例如 `ResourceSaver FLAG_CHANGE_PATH`；找到声明时直接返回成员证据，继承、默认值和歧义规则与 `Class.member` 一致。找不到声明时继续概念检索；返回类页面不代表已确认该成员存在。需要严格核实 API 时优先使用 `Class.member`。
+
+综合排序保留完整类名的加分，手册页面仍按相关性参与排序。全文检索先排除不可能命中的页面，并在一次查询内复用章节解析；不创建持久索引或修改语料。
+
 ### 检索日志
 
 在实际调用的 Skill 根目录创建 `config.local.json`（可复制 `config.example.json`），无需配置终端环境变量：
@@ -192,6 +196,10 @@ JSON output includes the following evidence metadata. Text output shows the rele
 Exit codes are `0` for results, `1` for no matches, and `2` for input or corpus errors. Partial corpora and missing ancestors are reported through metadata and `warnings`. Search logs also record coverage, missing ancestors, and ambiguity.
 
 In `auto` / `member` mode, a query that mixes `Class.member` with other terms and returns no matches receives guidance to split it. This guidance appears in text output, JSON `warnings`, and search logs; the exit code is `1`. When a concept query starts with a full class name, title ranking favors that class instead of treating a tokenized prefix of `ShaderMaterial` as an explicit reference to `Shader`.
+
+In `auto` mode, a full class name using its official capitalization can also be followed by a single member name, such as `ResourceSaver FLAG_CHANGE_PATH`. When a declaration is found, the search returns member evidence directly, with the same inheritance, default-value, and ambiguity rules as `Class.member`. Otherwise, it continues concept search; a returned class page does not confirm that the member exists. Prefer `Class.member` when checking a specific API strictly.
+
+Combined ranking preserves the bonus for a full class name, while manual pages still compete by relevance. Full-text search first excludes pages that cannot match and reuses section parsing within each query. It creates no persistent index and does not modify the corpus.
 
 ### Search logs
 

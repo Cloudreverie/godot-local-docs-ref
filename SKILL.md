@@ -39,7 +39,7 @@ python3 <skill-dir>/scripts/search_godot_docs.py "Indented block expected" --ver
 ```
 
 - 查询类、`Class.member`、构造或实例化表达式（如 `Vector2()` 或 `JSON.new()`），或进行初步探索时，使用默认的 `auto` 模式。
-- 精确成员查询每次只传入一个 API；例如将 `Control.mouse_filter focus_mode` 拆成 `Control.mouse_filter` 与 `Control.focus_mode` 分别查询。概念描述单独查询；收到拆分提示后按提示调整写法。
+- 精确成员查询优先使用 `Class.member`，每次只传入一个 API；例如将 `Control.mouse_filter focus_mode` 拆成 `Control.mouse_filter` 与 `Control.focus_mode` 分别查询。概念描述单独查询；收到拆分提示后按提示调整写法。`auto` 也识别完整类名后接单个成员名的空格写法；只有返回成员声明才算确认该 API，普通类页面或概念结果不作此证明。
 - 已知页面名称时使用 `--mode title`，已知章节标题时使用 `--mode section`，查询精确短语或错误时使用 `--mode content`。
 - 查询精确时使用 `--show-best`；探索合适来源时使用默认排序列表。文本列表为前三项结果提供摘要，其余结果仅提供简要索引；`--json` 保留所有已返回结果的摘要。
 - 使用文档中的官方英文术语构造查询。先将非英文概念译为英文再检索；结果不足或相关条目排名较低时，使用不带限定的成员名、精确措辞或排序结果中的词项细化查询。

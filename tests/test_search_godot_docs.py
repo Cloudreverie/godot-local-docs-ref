@@ -1368,6 +1368,134 @@ SizeFlags **size_flags_vertical** = `1`
         self.assertEqual(code, 0)
         self.assertEqual({result["title"] for result in payload["results"]}, {"Shader", "ShaderMaterial"})
 
+    def test_class_and_single_member_uses_declaration_without_unrelated_reads(self):
+        # 实际日志中的写法；手写声明只验证检索，不作为引擎事实来源。
+        self.add_class("ResourceSaver", """## Enumerations
+
+enum **SaverFlags**:
+
+SaverFlags **FLAG_CHANGE_PATH** = `4`
+
+查询路径测试的占位说明。
+""")
+        with mock.patch.object(search_godot_docs, "read_lines", wraps=search_godot_docs.read_lines) as reads:
+            code, payload, _ = self.invoke("ResourceSaver FLAG_CHANGE_PATH", "--show-best")
+        self.assertEqual(code, 0)
+        result = payload["results"][0]
+        self.assertEqual((result["kind"], result["target_class"], result["declaring_class"]),
+                         ("enumeration", "ResourceSaver", "ResourceSaver"))
+        self.assertEqual({call.args[0].title for call in reads.call_args_list}, {"ResourceSaver"})
+
+    def test_class_and_member_keeps_inheritance_defaults_and_ambiguity(self):
+        self.add_property_pages()
+        for suffix in ("mouse_filter", "get_mouse_filter()"):
+            _, spaced, _ = self.invoke("Label " + suffix, "--show-best")
+            _, qualified, _ = self.invoke("Label." + suffix, "--show-best")
+            self.assertEqual(spaced["results"], qualified["results"])
+            self.assertEqual(spaced["warnings"], qualified["warnings"])
+        label_page = self.fixture.root / "classes/class_label.md"
+        label_page.write_text(label_page.read_text().replace("**Inherits:** Control", "**Inherits:** MissingAncestor **<** Control"))
+        _, spaced, _ = self.invoke("Label mouse_filter", "--show-best")
+        _, qualified, _ = self.invoke("Label.mouse_filter", "--show-best")
+        self.assertEqual(spaced["results"], qualified["results"])
+        self.assertEqual(spaced["warnings"], qualified["warnings"])
+        self.assertIn("MissingAncestor", spaced["missing_ancestors"])
+        self.add_class("OverloadedExample", """## Method Descriptions
+
+float **distance_to**(other: Vector3)
+
+---
+
+float **distance_to**(other: Vector3, extra: bool)
+""")
+        _, payload, _ = self.invoke("OverloadedExample distance_to", "--show-best")
+        self.assertTrue(payload["ambiguous"])
+        self.assertEqual(len(payload["results"]), 1)
+
+    def test_full_class_identity_survives_combined_content_ranking(self):
+        self.add_class("EditorFileSystem", "查询排序测试的简短占位说明。\n")
+        self.add_class("EditorFileSystemImportFormatSupportQuery", "EditorFileSystem is importing. " * 3)
+        _, payload, _ = self.invoke("EditorFileSystem is_importing")
+        self.assertEqual(payload["results"][0]["title"], "EditorFileSystem")
+        self.assertEqual(payload["results"][0]["kind"], "document")
+        self.assertIn("EditorFileSystemImportFormatSupportQuery", [r["title"] for r in payload["results"]])
+
+    def test_missing_spaced_member_preserves_manual_fallback_without_api_claim(self):
+        self.add_class("Placeholder", "**Inherits:** MissingAncestor\n\n占位说明。\n")
+        relative = "tutorials/placeholder_workflow.md"
+        (self.fixture.root / relative).write_text("# Placeholder workflow\n\nPlaceholder missing_behavior workflow.\n")
+        self.manifest["files"].append({"path": relative, "title": "Placeholder workflow",
+                                       "source_path": "placeholder.rst", "license": "MIT"})
+        self.save_manifest()
+        _, payload, _ = self.invoke("Placeholder missing_behavior")
+        self.assertIn(relative, [r["path"] for r in payload["results"]])
+        self.assertFalse(payload["missing_ancestors"])
+        self.assertFalse(payload["ambiguous"])
+        self.assertTrue(all(r["kind"] in {"document", "content"} for r in payload["results"]))
+
+    def test_content_prefilter_keeps_phrases_inflection_and_wrapped_lines(self):
+        self.add_class("ContentExample", """## Notes
+
+Files were copied.
+
+clockwise winding
+order.
+
+```text
+ALPHA_HASH_SCALE
+```
+""")
+        for query in ("Files were copied", "clockwise winding order", "ALPHA_HASH_SCALE"):
+            with self.subTest(query=query):
+                code, payload, _ = self.invoke(query, "--mode", "content")
+                self.assertEqual(code, 0)
+                self.assertEqual(payload["results"][0]["title"], "ContentExample")
+        self.add_class("Unrelated", "没有查询词项的占位正文。\n" * 50)
+        with mock.patch.object(search_godot_docs, "score_content_text", wraps=search_godot_docs.score_content_text) as scores:
+            self.invoke("clockwise winding order", "--mode", "content")
+        self.assertFalse(any("占位正文" in call.args[0] for call in scores.call_args_list))
+
+    def test_unscoped_member_prefilter_preserves_escaped_names_and_ignores_noise(self):
+        self.add_class("AnimationMixer", r"""## Enumerations
+
+enum **AnimationCallbackModeProcess**:
+
+AnimationCallbackModeProcess **PROCESS\_MODE** = `0`
+
+结构测试的占位说明。
+""")
+        self.add_class("Unrelated", "不相关页面的占位说明。\n" * 50)
+        for query in ("AnimationCallbackModeProcess", "PROCESS_MODE"):
+            with self.subTest(query=query):
+                with mock.patch.object(search_godot_docs, "parse_sections", wraps=search_godot_docs.parse_sections) as parses:
+                    code, payload, _ = self.invoke(query, "--show-best")
+                self.assertEqual(code, 0)
+                self.assertEqual(payload["results"][0]["title"], "AnimationMixer")
+                self.assertEqual(payload["results"][0]["kind"], "enumeration")
+                self.assertFalse(any("不相关页面" in "\n".join(call.args[0]) for call in parses.call_args_list))
+
+    def test_class_hint_keeps_manual_workflows_and_multi_term_concepts(self):
+        relative = "tutorials/shaders/canvas_item_shader.md"
+        (self.fixture.root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (self.fixture.root / relative).write_text("# CanvasItem shaders\n\nCanvasItem shaders workflow.\n")
+        self.manifest["files"].append({"path": relative, "title": "CanvasItem shaders",
+                                       "source_path": "placeholder.rst", "license": "MIT"})
+        self.save_manifest()
+        for options in ((), ("--show-best",)):
+            _, payload, _ = self.invoke("CanvasItem shaders", *options)
+            self.assertEqual(payload["results"][0]["path"], relative)
+        _, payload, _ = self.invoke("Node queue_free remove_child")
+        self.assertTrue(all(r["kind"] in {"document", "content", "section"} for r in payload["results"]))
+
+    def test_nested_section_boundaries_ignore_fenced_headings(self):
+        lines = ["# Root", "", "## First", "### Child", "#### Grandchild", "text",
+                 "```text", "# Not a section", "```", "### Sibling", "## Second", "# Next"]
+        sections = search_godot_docs.parse_sections(lines)
+        self.assertEqual([(s.title, s.start, s.end) for s in sections], [
+            ("Root", 0, 11), ("First", 2, 10), ("Child", 3, 9),
+            ("Grandchild", 4, 9), ("Sibling", 9, 10), ("Second", 10, 11), ("Next", 11, 12),
+        ])
+
 
 class UsageLogTests(unittest.TestCase):
     def setUp(self) -> None:
