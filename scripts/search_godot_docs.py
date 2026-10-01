@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-SCRIPT_VERSION = "1.9.0"
+SCRIPT_VERSION = "1.10.0"
 DEFAULT_VERSION = "4.7"
 RANKED_EXCERPT_LIMIT = 3
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -94,6 +94,7 @@ class Document:
     title: str
     source_path: str
     license: str
+    page_status: Tuple[Tuple[int, str], ...] = ()
 
     @property
     def path(self) -> Path:
@@ -170,6 +171,23 @@ class SearchDiagnostics:
 
 
 @dataclass(frozen=True)
+class PageStatusEvidence:
+    document: Document
+    line: int
+    excerpt: str
+    truncated: bool = False
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "title": self.document.title,
+            "path": self.document.relative_path,
+            "line": self.line,
+            "excerpt": self.excerpt,
+            "truncated": self.truncated,
+        }
+
+
+@dataclass(frozen=True)
 class SearchResult:
     document: Document
     kind: str
@@ -180,6 +198,7 @@ class SearchResult:
     truncated: bool = False
     target_class: Optional[str] = None
     document_default: Optional[DocumentDefault] = None
+    page_status: Tuple[PageStatusEvidence, ...] = ()
 
     def as_dict(self) -> Dict[str, Any]:
         payload = {
@@ -191,6 +210,7 @@ class SearchResult:
             "score": self.score,
             "excerpt": self.excerpt,
             "truncated": self.truncated,
+            "page_status": [status.as_dict() for status in self.page_status],
         }
         if self.kind in STRUCTURED_RESULT_KINDS:
             payload.update(target_class=self.target_class, declaring_class=self.document.title)
@@ -484,7 +504,16 @@ def load_corpus(root: Path) -> Corpus:
         if relative in seen:
             raise CorpusError(f"manifest 中的 Markdown 路径重复：{relative}")
         seen.add(relative)
-        documents.append(Document(root, relative, title, source_path, license_id))
+        status_entries = entry.get("page_status", [])
+        if not isinstance(status_entries, list) or any(
+            not isinstance(status, dict)
+            or type(status.get("line")) is not int or status["line"] < 1
+            or not isinstance(status.get("excerpt"), str) or not status["excerpt"].strip()
+            for status in status_entries
+        ):
+            raise CorpusError(f"manifest 页面状态元数据无效：{relative}")
+        statuses = tuple((status["line"], status["excerpt"]) for status in status_entries)
+        documents.append(Document(root, relative, title, source_path, license_id, statuses))
     if not documents:
         raise CorpusError(f"生成文档的 manifest 不包含任何页面：{manifest_path}")
     return Corpus(root, version, commit, schema, tuple(documents), coverage)
@@ -884,6 +913,12 @@ def split_member_target(value: str) -> Tuple[Optional[str], str]:
 
 
 def member_block_matches(block: MemberBlock, document: Document, target: str) -> bool:
+    # Variant.Type 等名称自身包含点号；完整声明名的匹配先于限定符拆分。
+    complete_name = canonical_member_name(re.sub(r"::", ".", target))
+    if complete_name in {canonical_member_name(name) for name in block.declared_names}:
+        return not EMPTY_CALL_SUFFIX_RE.search(target) or complete_name in {
+            canonical_member_name(name) for name in block.callable_names
+        }
     qualifier, name = split_member_target(target)
     expected = canonical_member_name(name)
     if not expected or expected not in {
@@ -903,7 +938,11 @@ def member_block_matches(block: MemberBlock, document: Document, target: str) ->
 
 
 def inheritance_names(lines: Sequence[str]) -> Tuple[str, ...]:
-    for line in lines[body_start(lines) : min(len(lines), body_start(lines) + 40)]:
+    # 按类页面的首个子章节限定页首，避免较长的页面状态挤掉继承信息。
+    for line in lines[body_start(lines):]:
+        heading = HEADING_RE.match(line)
+        if heading and len(heading.group(1)) > 1:
+            break
         match = INHERITS_RE.match(line.strip())
         if not match:
             continue
@@ -1259,9 +1298,12 @@ def score_page_relevance(
         return 0
 
     start = body_start(lines)
-    counts = term_counts(expected, "\n".join(lines[start:]))
+    body = "\n".join(lines[start:])
+    counts = term_counts(expected, body)
     if not all(counts[term] for term in expected):
-        return 0
+        # 词形生成不是完整的语言处理；原样短语不能被不完整的词干规则排除。
+        if normalize_prose(parsed.raw) not in normalize_prose(body):
+            return 0
 
     title_hits, _ = term_coverage(expected, document.title)
     if sections_cache is None:
@@ -1322,7 +1364,8 @@ def content_results(
         page_text = "\n".join(lines[body_start(lines):]).casefold()
         if page_level and len(set(parsed.terms)) >= 2:
             # CamelCase 拆词只插入分隔符；任何可命中的词形都必须原样出现在大小写归一的原文中。
-            if any(not any(form in page_text for form in term_forms(term)) for term in parsed.terms):
+            if (any(not any(form in page_text for form in term_forms(term)) for term in parsed.terms)
+                    and not all(term in page_text for term in literal_terms)):
                 continue
         page_score = score_page_relevance(document, parsed, lines, sections_cache) if page_level else 0
         if page_level and len(set(parsed.terms)) >= 2 and not page_score:
@@ -1415,7 +1458,15 @@ def class_query_hint(corpus: Corpus, parsed: ParsedQuery) -> Optional[ParsedQuer
         document for document in corpus.documents
         if document.is_class_reference and document.title == match.group(1)
     ), None)
-    return replace(parsed, class_document=document, member=match.group(2)) if document else None
+    if document is None:
+        return None
+    suffix = match.group(2)
+    qualified = f"{document.title}.{suffix}"
+    hint = parse_query(qualified, corpus)
+    if re.match(r"@?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\(", suffix):
+        if parse_call_expression(qualified) is None:
+            hint = replace(hint, invalid_explicit_call=True)
+    return replace(hint, raw=parsed.raw, normalized=parsed.normalized, terms=parsed.terms)
 
 
 def prefer_class_identity(results: Iterable[SearchResult], hint: Optional[ParsedQuery]) -> List[SearchResult]:
@@ -1531,10 +1582,16 @@ def search_corpus(
         return sort_and_deduplicate(title_results(corpus, parsed, max_chars, cache), limit)
 
     hint = class_query_hint(corpus, parsed)
+    if hint and hint.invalid_explicit_call:
+        return []
     if hint and hint.member and identifier_like(hint.member):
         hint_report = SearchDiagnostics()
         candidates = ranked_members(hint, hint_report)
-        if candidates:
+        if not candidates:
+            new_document = implicit_new_document_result(hint, max_chars, cache)
+            if new_document:
+                candidates = [new_document]
+        if candidates or "(" in hint.member or hint.constructor_arity is not None:
             if diagnostics is not None:
                 diagnostics.missing_ancestors = hint_report.missing_ancestors
                 diagnostics.ambiguous = hint_report.ambiguous
@@ -1577,6 +1634,37 @@ def render_member_context(result: SearchResult, indent: str = "") -> None:
         print(f"{indent}目标类的文档默认值尚未确认；不可直接套用定义类的默认值。")
 
 
+def attach_page_status(
+    corpus: Corpus, results: Sequence[SearchResult], max_chars: int,
+) -> List[SearchResult]:
+    by_title = {
+        document.title: document for document in corpus.documents if document.is_class_reference
+    }
+    enriched = []
+    for result in results:
+        sources = [result.document]
+        if result.target_class and result.target_class in by_title:
+            sources.append(by_title[result.target_class])
+        if result.document_default:
+            sources.append(result.document_default.document)
+        statuses = []
+        for document in dict.fromkeys(sources):
+            for line, text in document.page_status:
+                excerpt, truncated = truncate_text(text, max_chars)
+                statuses.append(PageStatusEvidence(document, line, excerpt, truncated))
+        enriched.append(replace(result, page_status=tuple(statuses)))
+    return enriched
+
+
+def render_page_status(result: SearchResult, indent: str = "") -> None:
+    for status in result.page_status:
+        print(f"{indent}页面状态来源：{status.document.title} {status.document.relative_path}:{status.line}")
+        for line in status.excerpt.splitlines():
+            print(f"{indent}{line}")
+        if status.truncated:
+            print(f"{indent}[页面状态已截断；请按来源位置读取原文]")
+
+
 def render_text(
     corpus: Corpus,
     parsed: ParsedQuery,
@@ -1608,6 +1696,7 @@ def render_text(
         print(f"Result: [{result.kind}] {result.document.title}{heading}")
         print(f"Path: {result.document.relative_path}:{result.line}")
         render_member_context(result)
+        render_page_status(result)
         print("---")
         print(result.excerpt)
         if result.truncated:
@@ -1626,6 +1715,7 @@ def render_text(
         print(f"{number}. [{result.kind}] {result.document.title}{heading}")
         print(f"   {result.document.relative_path}:{result.line}  score={result.score}")
         render_member_context(result, "   ")
+        render_page_status(result, "   ")
         if number > RANKED_EXCERPT_LIMIT:
             if result.kind in STRUCTURED_RESULT_KINDS:
                 declaration = next(
@@ -1713,7 +1803,18 @@ def run_search(args: argparse.Namespace, record: Dict[str, Any]) -> int:
     except CorpusError as error:
         return fail(str(error))
 
+    results = attach_page_status(corpus, results, max_chars)
     warnings: List[str] = []
+    seen_status = set()
+    for result in results:
+        for status in result.page_status:
+            key = (status.document.relative_path, status.line)
+            if key not in seen_status:
+                seen_status.add(key)
+                warnings.append(
+                    f"来源页面带有官方状态提示：{status.document.title} "
+                    f"{status.document.relative_path}:{status.line}；请结合页面状态证据核实适用性。"
+                )
     if not results and args.mode in {"auto", "member"}:
         guidance = mixed_member_query_warning(parsed)
         if guidance:

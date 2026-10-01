@@ -1,4 +1,4 @@
-"""用手写的 Sphinx HTML 结构样例验证实际转换器与检索器的衔接。
+"""用手写结构样例和官方 HTML 快照验证实际转换器与检索器的衔接。
 
 样例不作为引擎事实来源，也不覆盖完整 Sphinx 构建；全部生成物位于临时目录。
 此组测试要求安装构建脚本中 CONVERTER_REQUIREMENTS 指定的依赖，不自动跳过。
@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.metadata
 import io
 import json
@@ -24,7 +25,10 @@ from test_search_godot_docs import search_godot_docs as search
 FIXTURES = Path(__file__).parent / "fixtures" / "conversion"
 
 
-class ConversionPipelineTests(unittest.TestCase):
+class FixturePipelineCase(unittest.TestCase):
+    fixtures = FIXTURES
+    source_commit = "fixture-commit"
+
     @classmethod
     def setUpClass(cls):
         for requirement in build.CONVERTER_REQUIREMENTS:
@@ -44,7 +48,7 @@ class ConversionPipelineTests(unittest.TestCase):
         cls.html = cls.root / "html"
         cls.source = cls.root / "source"
         cls.output = cls.root / "corpus"
-        shutil.copytree(FIXTURES, cls.html)
+        shutil.copytree(cls.fixtures, cls.html)
         for page in cls.html.rglob("*.html"):
             source = cls.source / page.relative_to(cls.html).with_suffix(".rst")
             source.parent.mkdir(parents=True, exist_ok=True)
@@ -53,13 +57,13 @@ class ConversionPipelineTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             build.invoke_converter(
                 Path(sys.executable), cls.html, cls.source, cls.output,
-                cls.fragment, "4.7", "fixture-ref", "fixture-commit", (), cls.root / "convert.log",
+                cls.fragment, "4.7", "fixture-ref", cls.source_commit, (), cls.root / "convert.log",
             )
         cls.entries = json.loads(cls.fragment.read_text())
         build.validate_corpus(cls.output, cls.entries)
         build.write_json(cls.output / "manifest.json", {
             "schema_version": build.MANIFEST_SCHEMA_VERSION,
-            "godot_docs": {"version": "4.7", "source_commit": "fixture-commit"},
+            "godot_docs": {"version": "4.7", "source_commit": cls.source_commit},
             "build": {"selected_sources": [entry["source_path"] for entry in cls.entries]},
             "files": cls.entries,
         })
@@ -72,6 +76,8 @@ class ConversionPipelineTests(unittest.TestCase):
         self.assertEqual(completed.stderr, "")
         return completed.returncode, json.loads(completed.stdout)
 
+
+class ConversionPipelineTests(FixturePipelineCase):
     def test_converted_subclass_defaults_keep_parent_declaration_and_exact_source(self):
         for member, expected, parent in (("mouse_filter", "2", "0"), ("size_flags_vertical", "4", "1")):
             with self.subTest(member=member):
@@ -150,6 +156,94 @@ class ConversionPipelineTests(unittest.TestCase):
                 self.assertEqual(entry["license"], expected)
         manual = (self.output / "tutorials/example.md").read_text()
         self.assertIn("[Another page](other.md)", manual)
+
+    def test_page_status_survives_conversion_and_inherited_member_search(self):
+        _, payload = self.invoke("Label.mouse_filter", "--show-best")
+        result = payload["results"][0]
+        statuses = result["page_status"]
+        self.assertEqual({status["title"] for status in statuses}, {"Control", "Label"})
+        self.assertNotIn("Fixture parent page", result["excerpt"])
+        for status in statuses:
+            page = (self.output / status["path"]).read_text().splitlines()
+            self.assertEqual(page[status["line"] - 1], "> **页面状态：**")
+            self.assertEqual("\n".join(page[status["line"] - 1:status["line"] - 1 + len(status["excerpt"].splitlines())]),
+                             status["excerpt"])
+            self.assertFalse(status["truncated"])
+        self.assertTrue(any("官方状态提示" in warning for warning in payload["warnings"]))
+        completed = subprocess.run([
+            sys.executable, "-B", str(Path(search.__file__)), "Label.mouse_filter",
+            "--docs-root", str(self.output), "--no-log", "--show-best",
+        ], capture_output=True, text=True, env=build.build_environment())
+        self.assertEqual(completed.returncode, 0)
+        self.assertIn("Fixture parent page has not been updated", completed.stdout)
+        self.assertIn("Fixture target page is work in progress", completed.stdout)
+
+    def test_converted_spaced_constructor_queries_retain_argument_count(self):
+        for suffix in ("Vector2()", "Vector2(Vector2i(1, 2))", "Vector2(1, 2, 3)"):
+            spaced_code, spaced = self.invoke("Vector2 " + suffix)
+            dotted_code, dotted = self.invoke("Vector2." + suffix)
+            self.assertEqual(spaced_code, dotted_code)
+            self.assertEqual(spaced["results"], dotted["results"])
+            self.assertEqual(spaced["ambiguous"], dotted["ambiguous"])
+
+
+class UpstreamSnapshotTests(FixturePipelineCase):
+    fixtures = Path(__file__).parent / "fixtures" / "upstream"
+    # 站点未提供渲染所用 commit，测试语料不能冒充某个源码提交的构建产物。
+    source_commit = "upstream-html-snapshot"
+
+    def test_snapshot_hashes_and_converted_sources_are_traceable(self):
+        metadata = json.loads((self.fixtures / "provenance.json").read_text())
+        self.assertEqual(len(metadata["files"]), 3)
+        self.assertEqual(len(self.entries), 3)
+        for record in metadata["files"]:
+            with self.subTest(path=record["path"]):
+                self.assertEqual(hashlib.sha256((self.fixtures / record["path"]).read_bytes()).hexdigest(),
+                                 record["sha256"])
+                converted = next(entry for entry in self.entries
+                                 if entry["path"] == record["path"].replace(".html", ".md"))
+                self.assertEqual(converted["license"], record["license"])
+                self.assertEqual(build.sha256_file(self.output / converted["path"]), converted["sha256"])
+
+    def test_real_constructor_overloads_keep_arity_and_ambiguity(self):
+        for suffix, count, ambiguous in (("Vector2()", 1, False), ("Vector2(1)", 2, True),
+                                          ("Vector2(1, 2)", 1, False), ("Vector2(1, 2, 3)", 0, False)):
+            with self.subTest(suffix=suffix):
+                code, spaced = self.invoke("Vector2 " + suffix)
+                _, dotted = self.invoke("Vector2." + suffix)
+                self.assertEqual(code, 0 if count else 1)
+                self.assertEqual(len(spaced["results"]), count)
+                self.assertEqual(spaced["ambiguous"], ambiguous)
+                self.assertEqual(spaced["results"], dotted["results"])
+                self.assertEqual({result["kind"] for result in spaced["results"]},
+                                 {"constructor"} if count else set())
+        _, payload = self.invoke("Vector2()", "--show-best")
+        self.assertIn("all components set to", payload["results"][0]["excerpt"])
+
+    def test_real_dotted_enum_and_value_queries_return_their_own_declarations(self):
+        for query in ("Variant.Type", "@GlobalScope.Variant.Type"):
+            with self.subTest(query=query):
+                code, payload = self.invoke(query, "--show-best")
+                self.assertEqual(code, 0)
+                self.assertEqual(payload["results"][0]["kind"], "enumeration")
+                self.assertIn("enum **Variant.Type**", payload["results"][0]["excerpt"])
+        for query in ("Variant.Type.TYPE_NIL", "@GlobalScope.Variant.Type.TYPE_NIL"):
+            with self.subTest(query=query):
+                code, payload = self.invoke(query, "--show-best")
+                self.assertEqual(code, 0)
+                self.assertEqual(payload["results"][0]["kind"], "enumeration")
+                self.assertIn("TYPE_NIL", payload["results"][0]["excerpt"])
+                self.assertNotIn("enum **Variant.Type**", payload["results"][0]["excerpt"])
+
+    def test_real_manual_section_and_original_phrase_remain_searchable(self):
+        code, payload = self.invoke("Computer animation relies on keyframes", "--mode", "section", "--show-best")
+        self.assertEqual(code, 0)
+        self.assertIn("A keyframe defines", payload["results"][0]["excerpt"])
+        for mode in ("auto", "content"):
+            code, payload = self.invoke("gradually changing over time", "--mode", mode, "--show-best")
+            self.assertEqual(code, 0)
+            self.assertEqual(payload["results"][0]["path"], "tutorials/animation/introduction.md")
+            self.assertIn("gradually changing over time", payload["results"][0]["excerpt"])
 
 
 if __name__ == "__main__":

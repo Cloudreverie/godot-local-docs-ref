@@ -1496,6 +1496,109 @@ AnimationCallbackModeProcess **PROCESS\_MODE** = `0`
             ("Grandchild", 4, 9), ("Sibling", 9, 10), ("Second", 10, 11), ("Next", 11, 12),
         ])
 
+    def test_spaced_calls_match_qualified_parsing(self):
+        calls = [("Vector2", suffix) for suffix in (
+            "Vector2()", "Vector2( )", "Vector2(Vector2i(1, 2))", "Vector2(1, 2)",
+            "Vector2(1, 2, 3)", "Vector2(1,,2)", "Vector2(1, 2", "Vector2", "new()",
+        )] + [("Node", suffix) for suffix in ("queue_free()", "new()", "missing_method()")]
+        for class_name, suffix in calls:
+            with self.subTest(class_name=class_name, suffix=suffix):
+                spaced_code, spaced, _ = self.invoke(class_name + " " + suffix)
+                qualified_code, qualified, _ = self.invoke(class_name + "." + suffix)
+                self.assertEqual(spaced_code, qualified_code)
+                self.assertEqual(spaced["results"], qualified["results"])
+                self.assertEqual(spaced["ambiguous"], qualified["ambiguous"])
+                self.assertEqual(spaced["warnings"], qualified["warnings"])
+
+    def test_dotted_enumeration_declaration_and_values_are_distinct(self):
+        page = self.fixture.root / "classes/class_@globalscope.md"
+        page.write_text("""# @GlobalScope
+
+## Enumerations
+
+enum **Variant.Type**:
+
+Variant.Type **TYPE_NIL** = `0`
+
+点号枚举的结构测试样例。
+
+---
+
+enum **Type**:
+
+Type **OTHER_VALUE** = `1`
+""")
+        for query in ("Variant.Type", "@GlobalScope.Variant.Type"):
+            code, payload, _ = self.invoke(query)
+            self.assertEqual(code, 0)
+            self.assertEqual(len(payload["results"]), 1)
+            self.assertTrue(payload["results"][0]["excerpt"].startswith("enum **Variant.Type**"))
+            self.assertFalse(payload["ambiguous"])
+        for query in ("Variant.Type.TYPE_NIL", "@GlobalScope.Variant.Type.TYPE_NIL"):
+            code, payload, _ = self.invoke(query)
+            self.assertEqual(code, 0)
+            self.assertTrue(payload["results"][0]["excerpt"].startswith("Variant.Type **TYPE_NIL**"))
+        for query in ("Wrong.Type", "Variant.Type()", "@GlobalScope.Variant.Type()", "Wrong.Type.TYPE_NIL"):
+            code, payload, _ = self.invoke(query)
+            self.assertEqual((code, payload["results"]), (1, []))
+
+    def test_auto_keeps_original_phrases_that_stemming_cannot_reconstruct(self):
+        relative = "tutorials/phrase_fixture.md"
+        (self.fixture.root / relative).write_text("# Example\n\nThe sample uses running\nanimation.\n\nFiles were copied.\n\nSwimming animation.\n")
+        self.manifest["files"].append({"path": relative, "title": "Example",
+                                       "source_path": "placeholder.rst", "license": "MIT"})
+        self.save_manifest()
+        for query in ("running animation", "Files were copied", "Swimming animation"):
+            for mode in ("auto", "content"):
+                with self.subTest(query=query, mode=mode):
+                    code, payload, _ = self.invoke(query, "--mode", mode)
+                    self.assertEqual(code, 0)
+                    self.assertEqual(payload["results"][0]["path"], relative)
+                    self.assertEqual(payload["results"][0]["kind"], "content")
+        code, payload, _ = self.invoke("running nonexistent")
+        self.assertEqual((code, payload["results"]), (1, []))
+
+    def test_page_status_metadata_is_bounded_and_old_manifests_remain_usable(self):
+        node = next(entry for entry in self.manifest["files"] if entry["title"] == "Node")
+        node["page_status"] = [{"line": 8, "excerpt": "> **页面状态：**\n> " + "页面尚未更新。" * 100}]
+        self.save_manifest()
+        code, payload, _ = self.invoke("Node.queue_free", "--max-chars", "200")
+        self.assertEqual(code, 0)
+        status = payload["results"][0]["page_status"][0]
+        self.assertTrue(status["truncated"])
+        self.assertEqual((status["path"], status["line"]), (node["path"], 8))
+        self.assertLessEqual(len(status["excerpt"]), 202)
+        self.assertEqual(sum("官方状态提示" in warning for warning in payload["warnings"]), 1)
+        code, text, _ = self.invoke("Node.methods", "--max-chars", "200", json_output=False)
+        self.assertEqual(code, 0)
+        self.assertIn("页面状态已截断", text)
+        del node["page_status"]
+        self.save_manifest()
+        code, payload, _ = self.invoke("Node.queue_free")
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["results"][0]["page_status"], [])
+        self.assertFalse(payload["warnings"])
+
+    def test_invalid_page_status_metadata_reports_input_error(self):
+        entry = self.manifest["files"][0]
+        for status in ("invalid", [None], [{"line": True, "excerpt": "text"}],
+                       [{"line": 0, "excerpt": "text"}], [{"line": 1, "excerpt": ""}]):
+            with self.subTest(status=status):
+                entry["page_status"] = status
+                self.save_manifest()
+                code, payload, error = self.invoke("Node.queue_free")
+                self.assertEqual((code, payload), (2, ""))
+                self.assertIn("页面状态元数据无效", error)
+
+    def test_long_page_status_does_not_hide_header_inheritance(self):
+        self.add_class("StatusNode", "> **页面状态：**\n" + "> 状态说明。\n" * 50 + "\n**Inherits:** Node\n")
+        code, payload, _ = self.invoke("StatusNode.queue_free", "--show-best")
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["results"][0]["declaring_class"], "Node")
+        self.assertEqual(search_godot_docs.inheritance_names([
+            "# Placeholder", "## Example", "**Inherits:** InventedClass",
+        ]), ())
+
 
 class UsageLogTests(unittest.TestCase):
     def setUp(self) -> None:

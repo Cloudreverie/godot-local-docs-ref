@@ -1,0 +1,47 @@
+<html><body><div itemprop="articleBody"><section><h1>Introduction to the animation features<a class="headerlink" href="#introduction-to-the-animation-features" title="Link to this heading"></a></h1><section id="computer-animation-relies-on-keyframes">
+<h2>Computer animation relies on keyframes<a class="headerlink" href="#computer-animation-relies-on-keyframes" title="Link to this heading"></a></h2>
+<p>A keyframe defines the value of a property at a point in time.</p>
+<p>Diamond shapes represent keyframes in the timeline. A line between two
+keyframes indicates that the value doesn't change between them.</p>
+<figure class="align-default" id="id4">
+<img alt="Keyframes in Godot" src="../../_images/animation_keyframes.webp"/>
+<figcaption>
+<p><span class="caption-text">Keyframes in Godot</span><a class="headerlink" href="#id4" title="Link to this image"></a></p>
+</figcaption>
+</figure>
+<p>You set values of a node's properties and create animation keyframes for them.
+When the animation runs, the engine will interpolate the values between the
+keyframes, resulting in them gradually changing over time.</p>
+<figure class="align-default" id="id5">
+<img alt="Two keyframes are all it takes to obtain a smooth motion" src="../../_images/animation_illustration.webp"/>
+<figcaption>
+<p><span class="caption-text">Two keyframes are all it takes to obtain a smooth motion</span><a class="headerlink" href="#id5" title="Link to this image"></a></p>
+</figcaption>
+</figure>
+<p>The timeline defines how long the animation will take. You can insert keyframes
+at various points, and change their timing.</p>
+<figure class="align-default" id="id6">
+<img alt="The timeline in the animation panel" src="../../_images/animation_timeline.webp"/>
+<figcaption>
+<p><span class="caption-text">The timeline in the animation panel</span><a class="headerlink" href="#id6" title="Link to this image"></a></p>
+</figcaption>
+</figure>
+<p>Each line in the Animation Panel is an animation track that references a
+Normal or Transform property of a node. Each track stores a path to
+a node and its affected property. For example, the position track
+in the illustration refers to the <code class="docutils literal notranslate"><span class="pre">position</span></code> property of the Sprite2D
+node.</p>
+<figure class="align-default" id="id7">
+<img alt="Example of Normal animation tracks" src="../../_images/animation_normal_track.webp"/>
+<figcaption>
+<p><span class="caption-text">Example of Normal animation tracks</span><a class="headerlink" href="#id7" title="Link to this image"></a></p>
+</figcaption>
+</figure>
+<div class="admonition tip">
+<p class="admonition-title">Tip</p>
+<p>If you animate the wrong property, you can edit a track's path at any time
+by double-clicking on it and typing the new path. Play the animation using the
+"Play from beginning" button <img alt="Play from beginning" src="../../_images/animation_play_from_beginning.png"/> (or pressing
+<kbd class="kbd compound docutils literal notranslate"><kbd class="kbd docutils literal notranslate">Shift</kbd> <kbd class="kbd docutils literal notranslate"></kbd>+<kbd class="kbd docutils literal notranslate"></kbd> <kbd class="kbd docutils literal notranslate">D</kbd></kbd> on keyboard) to see the changes instantly.</p>
+</div>
+</section></section></div></body></html>

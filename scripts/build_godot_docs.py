@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-SCRIPT_VERSION = "0.4.0"
+SCRIPT_VERSION = "0.5.0"
 MANIFEST_SCHEMA_VERSION = 2
 REPOSITORY = "godotengine/godot-docs"
 REPOSITORY_URL = f"https://github.com/{REPOSITORY}"
@@ -867,11 +867,25 @@ def prepare_article(
         "a.headerlink",
         ".viewcode-link",
         ".rst-footer-buttons",
-        ".article-status",
         ".user-content-notes",
     ):
         for node in article.select(selector):
             node.decompose()
+
+    # 页面状态属于来源可靠性信息，不能与导航组件一起丢弃。
+    for status in article.select(".article-status"):
+        if not status.get_text(" ", strip=True):
+            status.decompose()
+            continue
+        quote = soup.new_tag("blockquote")
+        marker = soup.new_tag("p")
+        strong = soup.new_tag("strong")
+        strong.string = "页面状态："
+        marker.append(strong)
+        quote.append(marker)
+        for child in list(status.contents):
+            quote.append(child.extract())
+        status.replace_with(quote)
 
     for tab_group in article.select(".sphinx-tabs-tabgroup, [role='tablist']"):
         container = tab_group.parent
@@ -994,6 +1008,18 @@ def convert_page(
     output_path = output_dir / output_relative
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(frontmatter + markdown, encoding="utf-8", newline="\n")
+    page_status = []
+    lines = markdown.splitlines()
+    for start, line in enumerate(lines):
+        if line.strip() != "> **页面状态：**":
+            continue
+        end = start + 1
+        while end < len(lines) and (not lines[end].strip() or lines[end].lstrip().startswith(">")):
+            end += 1
+        page_status.append({
+            "line": frontmatter.count("\n") + start + 1,
+            "excerpt": "\n".join(lines[start:end]).rstrip(),
+        })
     return {
         "path": output_relative.as_posix(),
         "source_path": source_relative.as_posix(),
@@ -1001,6 +1027,7 @@ def convert_page(
         "license": license_id,
         "bytes": output_path.stat().st_size,
         "sha256": sha256_file(output_path),
+        "page_status": page_status,
     }
 
 

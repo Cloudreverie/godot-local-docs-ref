@@ -1,0 +1,37 @@
+{
+  "captured_on": "2026-10-01",
+  "reference_source_commit": "9adca4c1c72917bfe1b7be3108abed5ce26696a6",
+  "files": [
+    {
+      "path": "classes/class_vector2.html",
+      "source_url": "https://docs.godotengine.org/en/4.7/classes/class_vector2.html",
+      "source_html_sha256": "a4430e41f04a8c9f88072c6d1c8a32ee4b4ac3c2528205b869ae049ab3601fee",
+      "sha256": "1b43f30f31d406e4022095574d37f4970ba041c08b9c67856905cbdcafa0a42f",
+      "selection": "#constructor-descriptions",
+      "reference_source_url": "https://github.com/godotengine/godot-docs/blob/9adca4c1c72917bfe1b7be3108abed5ce26696a6/classes/class_vector2.rst",
+      "license": "MIT"
+    },
+    {
+      "path": "classes/class_@globalscope.html",
+      "source_url": "https://docs.godotengine.org/en/4.7/classes/class_%40globalscope.html",
+      "source_html_sha256": "68727a74018b99c735a6d07220dbc09b6bb8c9f161ca893298468ffe177417b2",
+      "sha256": "cbe1b6473eda8bc97d7711ee54f3eb041b016eec6d24418813b628456ab757c0",
+      "selection": "#enumerations",
+      "reference_source_url": "https://github.com/godotengine/godot-docs/blob/9adca4c1c72917bfe1b7be3108abed5ce26696a6/classes/class_@globalscope.rst",
+      "license": "MIT"
+    },
+    {
+      "path": "tutorials/animation/introduction.html",
+      "source_url": "https://docs.godotengine.org/en/4.7/tutorials/animation/introduction.html",
+      "source_html_sha256": "a096b03bd7a6a17c8d2587522ade99e71f82f6e84bcbd446dda9ef81c1fba9c8",
+      "sha256": "b8d28a1dfaf3f326ffa8f1de12f4801fef88f6917d867b67c4f751fb5c786ff7",
+      "selection": "#computer-animation-relies-on-keyframes",
+      "reference_source_url": "https://github.com/godotengine/godot-docs/blob/9adca4c1c72917bfe1b7be3108abed5ce26696a6/tutorials/animation/introduction.rst",
+      "license": "CC-BY-3.0"
+    }
+  ],
+  "license_sources": {
+    "LICENSE-GODOT-DOCS.txt": "https://raw.githubusercontent.com/godotengine/godot-docs/9adca4c1c72917bfe1b7be3108abed5ce26696a6/LICENSE.txt",
+    "LICENSE-GODOT.txt": "https://raw.githubusercontent.com/godotengine/godot/83dec14d549108e1f314f57c1ce7e932c65370dd/LICENSE.txt"
+  }
+}

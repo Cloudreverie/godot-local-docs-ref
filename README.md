@@ -46,12 +46,15 @@ JSON 输出包含以下证据信息；文本输出会在相关结果旁提示：
 | `ambiguous` | 是否仍有多个适用候选，即使 `--show-best` 或 `--limit` 只展示一项也会报告；普通概念搜索的多个相关页面不属于此类 |
 | `target_class` / `declaring_class` | 成员查询的目标类（未限定时为 `null`）与返回声明所属的类 |
 | `document_default` | 属性的文档默认值（`value` 为文档字面量字符串）及其 `title`、`path`、`line`、`excerpt` 来源；按最近的覆盖取值，原声明摘要保持不变。未确认时为 `null`，`truncated` 为 `true` 时需补读 |
+| `page_status` | 来源页面的官方状态提示列表，包含 `title`、`path`、`line`、`excerpt`、`truncated`；成员结果同时关联声明、目标类及默认值来源页面。空列表不代表官方已确认页面内容最新 |
 
 退出码为 `0`（有结果）、`1`（无匹配）、`2`（输入或语料错误）。部分语料与缺失祖先通过元数据及 `warnings` 区分；搜索日志同步记录覆盖情况、缺失祖先和歧义状态。
 
+页面状态保留官方的过时或未完成提醒，相关结果的文本、JSON 及日志 `warnings` 都会提示。旧 manifest 仍可查询，但新搜索脚本无法恢复旧转换器已删除的提醒；需要时由部署者重建语料。
+
 `auto` / `member` 模式中，将 `Class.member` 与其他词项混写而无匹配时，会在文本、JSON 的 `warnings` 和检索日志中提示拆分，退出码为 `1`。概念查询以完整类名开头时，标题排序优先匹配该类，避免将 `ShaderMaterial` 的拆词前缀误当成 `Shader`。
 
-`auto` 模式也接受按官方大小写拼写的完整类名后接单个成员名，例如 `ResourceSaver FLAG_CHANGE_PATH`；找到声明时直接返回成员证据，继承、默认值和歧义规则与 `Class.member` 一致。找不到声明时继续概念检索；返回类页面不代表已确认该成员存在。需要严格核实 API 时优先使用 `Class.member`。
+`auto` 模式也接受按官方大小写拼写的完整类名后接单个成员名，例如 `ResourceSaver FLAG_CHANGE_PATH`；找到声明时直接返回成员证据，继承、默认值和歧义规则与 `Class.member` 一致。非调用形式找不到声明时继续概念检索；返回类页面不代表已确认该成员存在。显式调用如 `Vector2 Vector2()` 与 `Vector2.Vector2()` 使用相同的参数数量筛选，无匹配时不降级为概念结果。需要严格核实 API 时优先使用 `Class.member`。
 
 综合排序保留完整类名的加分，手册页面仍按相关性参与排序。全文检索先排除不可能命中的页面，并在一次查询内复用章节解析；不创建持久索引或修改语料。
 
@@ -126,7 +129,7 @@ python3 -B -m unittest discover -s tests -p 'test_build_godot_docs.py'
 python3 -B -m unittest discover -s tests -p 'test_search_godot_docs.py'
 ```
 
-转换回归使用 `tests/fixtures/conversion/` 中手写的 Sphinx HTML 结构样例，实际执行转换器和检索脚本，生成物全部位于临时目录。它覆盖表格、默认值覆盖、继承、重载、警告和代码块，不需要读取 `references/`，也不执行完整 Sphinx 构建。
+转换回归使用 `tests/fixtures/conversion/` 中手写的 Sphinx HTML 结构样例，以及 `tests/fixtures/upstream/` 中保留来源、哈希和许可证的真实官方 HTML 片段（见 [样本说明](tests/fixtures/upstream/SOURCE.md)）。测试实际执行转换器和检索脚本，覆盖表格、默认值覆盖、继承、重载、带点号的枚举名、自然语言短语、页面状态、警告和代码块。测试离线运行，生成物全部位于临时目录，不需要读取 `references/`，也不执行完整 Sphinx 构建；这些小样本不能代替完整语料基准。
 
 在独立虚拟环境中安装与 `CONVERTER_REQUIREMENTS` 一致的依赖后运行（以下为 macOS/Linux 示例；Windows 使用 `.venv\Scripts\python.exe`）：
 
@@ -192,12 +195,15 @@ JSON output includes the following evidence metadata. Text output shows the rele
 | `ambiguous` | Whether multiple applicable candidates remain, even if `--show-best` or `--limit` displays only one. Multiple relevant pages in a normal concept search do not count as this kind of ambiguity. |
 | `target_class` / `declaring_class` | The target class of a member query (`null` if unqualified) and the class containing the returned declaration. |
 | `document_default` | The property's documented default (`value` is the literal value as a string), with its source `title`, `path`, `line`, and `excerpt`. The nearest override takes precedence, while the original declaration excerpt remains unchanged. `null` means unconfirmed; `truncated: true` means the source needs further reading. |
+| `page_status` | Official page status notices, each with `title`, `path`, `line`, `excerpt`, and `truncated`. Member results include notices from the declaration, target class, and documented default sources. An empty list does not confirm that the page is up to date. |
 
 Exit codes are `0` for results, `1` for no matches, and `2` for input or corpus errors. Partial corpora and missing ancestors are reported through metadata and `warnings`. Search logs also record coverage, missing ancestors, and ambiguity.
 
+Official notices about outdated or unfinished pages are preserved and flagged in text output, JSON, and log `warnings`. Older manifests remain searchable, but the updated search script cannot recover notices discarded by an older converter. The deployer must rebuild the corpus when those notices are needed.
+
 In `auto` / `member` mode, a query that mixes `Class.member` with other terms and returns no matches receives guidance to split it. This guidance appears in text output, JSON `warnings`, and search logs; the exit code is `1`. When a concept query starts with a full class name, title ranking favors that class instead of treating a tokenized prefix of `ShaderMaterial` as an explicit reference to `Shader`.
 
-In `auto` mode, a full class name using its official capitalization can also be followed by a single member name, such as `ResourceSaver FLAG_CHANGE_PATH`. When a declaration is found, the search returns member evidence directly, with the same inheritance, default-value, and ambiguity rules as `Class.member`. Otherwise, it continues concept search; a returned class page does not confirm that the member exists. Prefer `Class.member` when checking a specific API strictly.
+In `auto` mode, a full class name using its official capitalization can also be followed by a single member name, such as `ResourceSaver FLAG_CHANGE_PATH`. When a declaration is found, the search returns member evidence directly, with the same inheritance, default-value, and ambiguity rules as `Class.member`. Non-call queries fall back to concept search when no declaration is found; a returned class page does not confirm that the member exists. Explicit calls such as `Vector2 Vector2()` and `Vector2.Vector2()` use the same argument-count filtering and do not fall back to concept results. Prefer `Class.member` when checking a specific API strictly.
 
 Combined ranking preserves the bonus for a full class name, while manual pages still compete by relevance. Full-text search first excludes pages that cannot match and reuses section parsing within each query. It creates no persistent index and does not modify the corpus.
 
@@ -272,7 +278,7 @@ python3 -B -m unittest discover -s tests -p 'test_build_godot_docs.py'
 python3 -B -m unittest discover -s tests -p 'test_search_godot_docs.py'
 ```
 
-Conversion regression tests use handwritten Sphinx HTML fixtures in `tests/fixtures/conversion/` and execute the actual converter and search script. All generated files are placed in temporary directories. These tests cover tables, default overrides, inheritance, overloads, warnings, and code blocks. They do not read `references/` or run a full Sphinx build.
+Conversion regression tests use handwritten Sphinx HTML fixtures in `tests/fixtures/conversion/` and real official HTML fragments in `tests/fixtures/upstream/`, with source links, hashes, and licenses (see [sample provenance](tests/fixtures/upstream/SOURCE.md)). They execute the actual converter and search script, covering tables, default overrides, inheritance, overloads, dotted enum names, natural-language phrases, page status, warnings, and code blocks. Tests run offline, with all generated files in temporary directories. They do not read `references/` or run a full Sphinx build; these small samples do not replace a full-corpus benchmark.
 
 Install the dependencies specified by `CONVERTER_REQUIREMENTS` in a separate virtual environment, then run the tests. The following example is for macOS/Linux; on Windows, use `.venv\Scripts\python.exe`:
 
