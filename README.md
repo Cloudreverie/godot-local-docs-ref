@@ -54,6 +54,8 @@ JSON 输出包含以下证据信息；文本输出会在相关结果旁提示：
 
 `auto` / `member` 模式中，将 `Class.member` 与其他词项混写而无匹配时，会在文本、JSON 的 `warnings` 和检索日志中提示拆分，退出码为 `1`。概念查询以完整类名开头时，标题排序优先匹配该类，避免将 `ShaderMaterial` 的拆词前缀误当成 `Shader`。
 
+限定类中没有匹配声明时，`auto` / `member` 还会核实 `@GlobalScope` 中实际声明的带点号枚举名及枚举值，例如 `Variant.Type` 与 `Variant.Type.TYPE_NIL`，避免同名 `Variant` 类遮蔽全局枚举。已有类成员声明优先；需要明确指定全局来源时使用 `@GlobalScope.` 前缀。此回退不扩展到其他类或概念检索。
+
 `auto` 模式也接受按官方大小写拼写的完整类名后接单个成员名，例如 `ResourceSaver FLAG_CHANGE_PATH`；找到声明时直接返回成员证据，继承、默认值和歧义规则与 `Class.member` 一致。非调用形式找不到声明时继续概念检索；返回类页面不代表已确认该成员存在。显式调用如 `Vector2 Vector2()` 与 `Vector2.Vector2()` 使用相同的参数数量筛选，无匹配时不降级为概念结果。需要严格核实 API 时优先使用 `Class.member`。
 
 综合排序保留完整类名的加分，手册页面仍按相关性参与排序。全文检索先排除不可能命中的页面，并在一次查询内复用章节解析；不创建持久索引或修改语料。
@@ -202,6 +204,8 @@ Exit codes are `0` for results, `1` for no matches, and `2` for input or corpus 
 Official notices about outdated or unfinished pages are preserved and flagged in text output, JSON, and log `warnings`. Older manifests remain searchable, but the updated search script cannot recover notices discarded by an older converter. The deployer must rebuild the corpus when those notices are needed.
 
 In `auto` / `member` mode, a query that mixes `Class.member` with other terms and returns no matches receives guidance to split it. This guidance appears in text output, JSON `warnings`, and search logs; the exit code is `1`. When a concept query starts with a full class name, title ranking favors that class instead of treating a tokenized prefix of `ShaderMaterial` as an explicit reference to `Shader`.
+
+When no declaration matches in the specified class, `auto` / `member` also checks dotted enum names and values actually declared in `@GlobalScope`, such as `Variant.Type` and `Variant.Type.TYPE_NIL`. This prevents a class named `Variant` from hiding the global enum. Existing class declarations take priority; use the `@GlobalScope.` prefix to explicitly select the global source. This fallback does not search other classes or concepts.
 
 In `auto` mode, a full class name using its official capitalization can also be followed by a single member name, such as `ResourceSaver FLAG_CHANGE_PATH`. When a declaration is found, the search returns member evidence directly, with the same inheritance, default-value, and ambiguity rules as `Class.member`. Non-call queries fall back to concept search when no declaration is found; a returned class page does not confirm that the member exists. Explicit calls such as `Vector2 Vector2()` and `Vector2.Vector2()` use the same argument-count filtering and do not fall back to concept results. Prefer `Class.member` when checking a specific API strictly.
 

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-SCRIPT_VERSION = "1.10.0"
+SCRIPT_VERSION = "1.10.1"
 DEFAULT_VERSION = "4.7"
 RANKED_EXCERPT_LIMIT = 3
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -1503,6 +1503,29 @@ def sort_and_deduplicate(
     return ordered[:limit]
 
 
+def global_enum_fallback_query(
+    corpus: Corpus, parsed: ParsedQuery, cache: Dict[str, List[str]],
+) -> Optional[ParsedQuery]:
+    """类名可能遮蔽全局枚举名前缀；只允许回退到实际存在的完整枚举名。"""
+    if (not parsed.class_document or not parsed.member or parsed.constructor_arity is not None
+            or "(" in parsed.raw or not identifier_like(parsed.raw)):
+        return None
+    target = canonical_member_name(re.sub(r"::", ".", parsed.raw))
+    global_scope = next((document for document in corpus.documents
+                         if document.is_class_reference and document.title == "@GlobalScope"), None)
+    if global_scope is None or global_scope == parsed.class_document:
+        return None
+    for line in read_lines(global_scope, cache):
+        match = ENUM_HEADER_RE.match(line.strip())
+        if not match:
+            continue
+        name = canonical_member_name(match.group(1))
+        if "." in name and (target == name or target.startswith(name + ".")):
+            # 后续仍由成员解析确认声明或枚举值；页内提及、拼错的值均不能成为证据。
+            return replace(parsed, class_document=global_scope, member=parsed.raw)
+    return None
+
+
 def search_corpus(
     corpus: Corpus,
     parsed: ParsedQuery,
@@ -1519,6 +1542,17 @@ def search_corpus(
         query: ParsedQuery = parsed, report: Optional[SearchDiagnostics] = diagnostics,
     ) -> List[SearchResult]:
         candidates = member_results(corpus, query, max_chars, cache, report)
+        if not candidates:
+            fallback = global_enum_fallback_query(corpus, query, cache)
+            if fallback:
+                fallback_report = SearchDiagnostics()
+                candidates = [result for result in member_results(
+                    corpus, fallback, max_chars, cache, fallback_report,
+                ) if result.kind == "enumeration"]
+                if candidates:
+                    query = fallback
+                    if report is not None:
+                        report.missing_ancestors = fallback_report.missing_ancestors
         ordered = sort_and_deduplicate(candidates, len(candidates))
         if report is not None and ordered:
             # 类名已限定时，较远祖先的同名声明不构成重载歧义。

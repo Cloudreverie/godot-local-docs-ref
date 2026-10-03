@@ -1511,6 +1511,7 @@ AnimationCallbackModeProcess **PROCESS\_MODE** = `0`
                 self.assertEqual(spaced["warnings"], qualified["warnings"])
 
     def test_dotted_enumeration_declaration_and_values_are_distinct(self):
+        self.add_class("Variant", "**Inherits:** MissingParent\n\n用于名称冲突回归的占位类页面。\n")
         page = self.fixture.root / "classes/class_@globalscope.md"
         page.write_text("""# @GlobalScope
 
@@ -1528,19 +1529,37 @@ enum **Type**:
 
 Type **OTHER_VALUE** = `1`
 """)
-        for query in ("Variant.Type", "@GlobalScope.Variant.Type"):
-            code, payload, _ = self.invoke(query)
+        for mode in ("auto", "member"):
+            for query in ("Variant.Type", "@GlobalScope.Variant.Type", "Variant::Type"):
+                with self.subTest(query=query, mode=mode):
+                    code, payload, _ = self.invoke(query, "--mode", mode)
+                    self.assertEqual(code, 0)
+                    self.assertEqual(len(payload["results"]), 1)
+                    self.assertTrue(payload["results"][0]["excerpt"].startswith("enum **Variant.Type**"))
+                    self.assertEqual(payload["results"][0]["declaring_class"], "@GlobalScope")
+                    self.assertEqual(payload["results"][0]["target_class"], "@GlobalScope")
+                    self.assertFalse(payload["missing_ancestors"])
+                    self.assertFalse(payload["ambiguous"])
+            for query in ("Variant.Type.TYPE_NIL", "@GlobalScope.Variant.Type.TYPE_NIL"):
+                code, payload, _ = self.invoke(query, "--mode", mode)
+                self.assertEqual(code, 0)
+                self.assertTrue(payload["results"][0]["excerpt"].startswith("Variant.Type **TYPE_NIL**"))
+            for query in ("Wrong.Type", "Variant.Type()", "@GlobalScope.Variant.Type()", "Wrong.Type.TYPE_NIL",
+                          "Variant.Type.MISSING", "Variant.OTHER_VALUE", "Variant.Type.OTHER_VALUE", "Variant.Node.queue_free"):
+                code, payload, _ = self.invoke(query, "--mode", mode)
+                self.assertEqual((code, payload["results"]), (1, []))
+
+    def test_existing_class_declaration_keeps_priority_over_global_enum_fallback(self):
+        self.add_class("Variant", "## Enumerations\n\nenum **Type**:\n\nType **LOCAL_VALUE** = `0`\n")
+        page = self.fixture.root / "classes/class_@globalscope.md"
+        page.write_text("# @GlobalScope\n\n## Enumerations\n\nenum **Variant.Type**:\n\nVariant.Type **TYPE_NIL** = `0`\n")
+        for mode in ("auto", "member"):
+            code, payload, _ = self.invoke("Variant.Type", "--mode", mode)
             self.assertEqual(code, 0)
-            self.assertEqual(len(payload["results"]), 1)
-            self.assertTrue(payload["results"][0]["excerpt"].startswith("enum **Variant.Type**"))
-            self.assertFalse(payload["ambiguous"])
-        for query in ("Variant.Type.TYPE_NIL", "@GlobalScope.Variant.Type.TYPE_NIL"):
-            code, payload, _ = self.invoke(query)
+            self.assertEqual(payload["results"][0]["declaring_class"], "Variant")
+            code, payload, _ = self.invoke("@GlobalScope.Variant.Type", "--mode", mode)
             self.assertEqual(code, 0)
-            self.assertTrue(payload["results"][0]["excerpt"].startswith("Variant.Type **TYPE_NIL**"))
-        for query in ("Wrong.Type", "Variant.Type()", "@GlobalScope.Variant.Type()", "Wrong.Type.TYPE_NIL"):
-            code, payload, _ = self.invoke(query)
-            self.assertEqual((code, payload["results"]), (1, []))
+            self.assertEqual(payload["results"][0]["declaring_class"], "@GlobalScope")
 
     def test_auto_keeps_original_phrases_that_stemming_cannot_reconstruct(self):
         relative = "tutorials/phrase_fixture.md"

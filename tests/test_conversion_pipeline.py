@@ -245,6 +245,26 @@ class UpstreamSnapshotTests(FixturePipelineCase):
             self.assertEqual(payload["results"][0]["path"], "tutorials/animation/introduction.md")
             self.assertIn("gradually changing over time", payload["results"][0]["excerpt"])
 
+    def test_real_global_enum_remains_searchable_with_a_variant_class_present(self):
+        # 真实全局枚举快照加上明确标为占位的同名类，复现完整语料中的范围冲突。
+        with tempfile.TemporaryDirectory() as temporary:
+            corpus = Path(temporary) / "corpus"
+            shutil.copytree(self.output, corpus)
+            (corpus / "classes/class_variant.md").write_text("# Variant\n\n名称冲突测试的占位类页面。\n")
+            manifest = json.loads((corpus / "manifest.json").read_text())
+            manifest["files"].append({"path": "classes/class_variant.md", "title": "Variant",
+                                      "source_path": "classes/class_variant.rst", "license": "MIT"})
+            build.write_json(corpus / "manifest.json", manifest)
+            for mode in ("auto", "member"):
+                for name in ("Variant.Type", "Variant.Type.TYPE_NIL"):
+                    with self.subTest(mode=mode, name=name):
+                        options = ("--mode", mode, "--show-best", "--docs-root", str(corpus))
+                        code, payload = self.invoke(name, *options)
+                        _, qualified = self.invoke("@GlobalScope." + name, *options)
+                        self.assertEqual(code, 0)
+                        self.assertEqual(payload["results"], qualified["results"])
+                        self.assertEqual(payload["ambiguous"], qualified["ambiguous"])
+
 
 if __name__ == "__main__":
     unittest.main()
